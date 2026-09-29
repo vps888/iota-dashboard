@@ -41,7 +41,7 @@ function SetupScreen({ onSubmit }: { onSubmit: (id: string) => void }): ReactEle
             value={value}
             onChange={(e) => { setValue(e.target.value); setError(null) }}
             onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
-            placeholder="例如 5CQ9NmBfSzCuL5TyypksPMhRrge3j7TjyWEJTd3nz2ooVT2p"
+            placeholder="粘贴你的 Miner ID(SS58 hotkey)"
             spellCheck={false}
             autoFocus
           />
