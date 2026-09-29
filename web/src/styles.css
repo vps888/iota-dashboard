@@ -57,7 +57,6 @@ button { font: inherit; cursor: pointer; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .status-dot.positive { background: var(--positive); }
 .status-dot.negative { background: var(--negative); }
-.panel-last-seen { color: var(--muted); font: 10px ui-monospace, monospace; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px 16px; padding: 18px 19px 20px; }
 .earnings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

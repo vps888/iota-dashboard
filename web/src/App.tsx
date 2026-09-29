@@ -72,7 +72,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
         <div className="header-actions">
           <span className="connection is-connected">
             <i />
-            {loading ? '加载中…' : `${countdown}s 后刷新`}
+            {loading ? '加载中…' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
           </span>
           <button className="refresh-btn" onClick={refresh} disabled={loading}>
             立即刷新
@@ -102,9 +102,6 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                     <span className={`status-dot ${data.miner?.online ? 'positive' : 'negative'}`} />
                     {data.miner?.online ? '在线' : '离线'}
                   </div>
-                  <span className="panel-last-seen">
-                    更新 {fmtTime(data.fetchedAt)} · 下次刷新 {countdown}s
-                  </span>
                 </div>
               </div>
               <div className="metric-grid">
@@ -157,7 +154,6 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <span>TRAINING RECORDS / 训练记录</span>
                   <h2>训练记录</h2>
                 </div>
-                <span>近 7 天 · 最新在前</span>
               </div>
               {trainingRows.length === 0 ? (
                 <p className="empty-state">暂无训练数据</p>
@@ -276,7 +272,6 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
 
       <footer className="app-footer">
         <span>数据来源:Macrocosmos 公开接口 · 每分钟自动刷新</span>
-        <span>{fetchedAtMs ? `最后刷新 ${fmtTime(Math.floor(fetchedAtMs / 1000))}` : ''}</span>
       </footer>
     </div>
   )
