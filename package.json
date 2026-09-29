@@ -1,0 +1,27 @@
+{
+  "name": "iota-dashboard",
+  "version": "1.0.0",
+  "description": "Online dashboard for IOTA Train at Home miner status, deployed on Cloudflare Pages",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "vite build --config web/vite.config.ts",
+    "dev": "vite --config web/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit",
+    "deploy": "npm run build && wrangler pages deploy dist/web"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260426.1",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "wrangler": "^4.0.0"
+  }
+}
