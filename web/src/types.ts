@@ -10,4 +10,5 @@ export function toTrainingRows(
   return points
     .filter((p) => p.tokens > 0)
     .map((p) => ({ ts: p.ts, tokens: p.tokens, contribution: p.contribution }))
+    .sort((a, b) => b.ts - a.ts)
 }

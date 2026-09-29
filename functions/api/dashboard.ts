@@ -14,6 +14,27 @@ async function api(path: string): Promise<unknown> {
   return res.json()
 }
 
+// CoinGecko 免费接口按 IP 限流,Cloudflare 出口经常 429;
+// 价格缓存 10 分钟,失败时沿用上次的值(stale 也比没有好)
+let priceCache: { usd: number; at: number } | null = null
+const PRICE_TTL_MS = 10 * 60_000
+
+async function getUsdPrice(): Promise<number | null> {
+  if (priceCache && Date.now() - priceCache.at < PRICE_TTL_MS) return priceCache.usd
+  try {
+    const r = await fetch(PRICE_URL, { headers: { 'User-Agent': 'iota-dashboard/1.0', Accept: 'application/json' } })
+    if (r.ok) {
+      const d = (await r.json()) as { 'iota-2'?: { usd?: number } }
+      const usd = d['iota-2']?.usd
+      if (typeof usd === 'number' && usd > 0) {
+        priceCache = { usd, at: Date.now() }
+        return usd
+      }
+    }
+  } catch {}
+  return priceCache?.usd ?? null
+}
+
 function shortId(id: string): string {
   return `${id.slice(0, 6)}…${id.slice(-6)}`
 }
@@ -52,9 +73,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     api(`/v1/entitlements/totals/hotkey/${hotkey}`) as Promise<{ total_amount_earned: number; total_amount_paid: number; total_amount_pending: number; total_amount_frozen: number; minimum_payout_amount: number }>,
     api(`/v1/entitlements/history/hotkey/${hotkey}`) as Promise<{ timestamps: number[]; alpha_amounts: number[]; statuses: string[] }>,
     api('/v1/entitlements/next_payout_timestamp') as Promise<{ next_payout_time: number }>,
-    fetch(PRICE_URL, { headers: { 'User-Agent': 'iota-dashboard/1.0', Accept: 'application/json' } })
-      .then((r) => (r.ok ? (r.json() as Promise<{ 'iota-2'?: { usd?: number } }>) : null))
-      .catch(() => null),
+    getUsdPrice(),
   ])
   const [occupancyR, totalsR, historyR, payoutR, priceRes] = settled
   if (occupancyR.status === 'rejected') throw new Error('runs_occupancy failed')
@@ -99,7 +118,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     const last = metrics.epochs.length - 1
     const lastThr = throughput.epochs.length - 1
     const latestPoint = tokens.data_points.length ? tokens.data_points[tokens.data_points.length - 1] : null
-    const training = latestPoint && latestPoint.token_count > 0
+    const nowTs = Math.floor(Date.now() / 1000)
+    // “在线”=最近 2 个采样点里有产出 token(采样间隔约 30-40 分钟);
+    // 注册在 run 里不代表在线,只是保留名额
+    const ONLINE_WINDOW_S = 3600
+    const onlinePoints = tokens.data_points.filter((p) => p.token_count > 0 && nowTs - p.timestamp <= ONLINE_WINDOW_S)
+    const online = onlinePoints.length > 0
+    const training = online && latestPoint !== null && latestPoint !== undefined && latestPoint.token_count > 0
 
     // “今日”按香港时间(官方结算时区)0 点起算
     const hkNow = new Date(Date.now() + 8 * 3600_000)
@@ -115,7 +140,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       shortId: shortId(hotkey),
       name: `Miner ${shortId(hotkey)}`,
       runId,
-      online: membership.rank !== null,
+      online,
       training,
       tokensPerActivation: 3200,
       throughput: lastThr >= 0 ? throughput.throughputs[lastThr] ?? 0 : 0,
@@ -138,8 +163,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     .map((ts, i) => ({ ts, amount: history.alpha_amounts[i] ?? 0, status: history.statuses[i] ?? 'unknown' }))
     .sort((a, b) => b.ts - a.ts)
 
-  const priceData = priceRes.status === 'fulfilled' ? priceRes.value : null
-  const usdPerIota = priceData?.['iota-2']?.usd ?? null
+  const usdPerIota = priceRes.status === 'fulfilled' ? priceRes.value : null
 
   const payload = {
     fetchedAt: Math.floor(Date.now() / 1000),

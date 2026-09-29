@@ -109,10 +109,6 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
               </div>
               <div className="metric-grid">
                 <div className="metric">
-                  <span>Miner ID</span>
-                  <strong title={minerId}>{data.miner?.shortId ?? '—'}</strong>
-                </div>
-                <div className="metric">
                   <span>训练状态</span>
                   <strong className={data.miner?.training ? 'fresh' : 'stale'}>
                     {data.miner?.training ? '训练中' : data.miner?.online ? '等待任务' : '离线'}
@@ -161,7 +157,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <span>TRAINING RECORDS / 训练记录</span>
                   <h2>训练记录</h2>
                 </div>
-                <span>{trainingRows.length} 条非零记录</span>
+                <span>近 7 天 · 最新在前</span>
               </div>
               {trainingRows.length === 0 ? (
                 <p className="empty-state">暂无训练数据</p>
