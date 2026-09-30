@@ -14,6 +14,7 @@ export interface MinerStatus {
   numHotkeys: number | null
   contributionPerc: number | null
   partitionLabel: string | null
+  lastContributionAt: number | null
   weightUploaded: number
   latestSampleAt: number | null
   epochRecords: EpochRecord[]

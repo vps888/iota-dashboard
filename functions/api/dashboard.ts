@@ -140,6 +140,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     const online = onlinePoints.length > 0
     const training = online && latestPoint !== null && latestPoint !== undefined && latestPoint.token_count > 0
 
+    // 最后一次有 token 产出的采样时间
+    const lastProductivePoint = [...tokens.data_points].reverse().find((p) => p.token_count > 0)
+
     // uploaded_partition_percs 是分区编号(0..n_splits-1),不是百分比;
     // n_splits=3 时 0/1/2 对应 L0/L1/L2
     const latestPartitionIdx = last >= 0 ? metrics.uploaded_partition_percs[last] ?? null : null
@@ -184,6 +187,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       numHotkeys: last >= 0 ? metrics.num_hotkeys_in_epochs[last] ?? null : null,
       contributionPerc: last >= 0 ? metrics.act_contribution_percs[last] ?? null : null,
       partitionLabel,
+      lastContributionAt: lastProductivePoint?.timestamp ?? null,
       epochRecords,
       weightUploaded: last >= 0 ? metrics.weight_uploaded[last] ?? 0 : 0,
       latestSampleAt: last >= 0 ? metrics.timestamps[last] ?? null : null,

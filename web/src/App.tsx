@@ -142,6 +142,12 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <strong>{fmtAgo(data.miner?.latestSampleAt, now)}</strong>
                 </div>
                 <div className="metric">
+                  <span>最后有效贡献</span>
+                  <strong className={data.miner?.lastContributionAt && now - data.miner.lastContributionAt > 3600 ? 'stale' : 'fresh'}>
+                    {data.miner?.lastContributionAt ? `${fmtAgo(data.miner.lastContributionAt, now)} · ${fmtTime(data.miner.lastContributionAt)}` : '—'}
+                  </strong>
+                </div>
+                <div className="metric">
                   <span>下次支付</span>
                   <strong>{fmtTime(data.nextPayoutAt)}</strong>
                 </div>
