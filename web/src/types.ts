@@ -1,14 +1,7 @@
-export interface TrainingRow {
-  ts: number
-  tokens: number
-  contribution: number
-}
+import type { EpochRecord } from './api.js'
 
-export function toTrainingRows(
-  points: { ts: number; tokens: number; networkTokens: number; contribution: number }[],
-): TrainingRow[] {
-  return points
-    .filter((p) => p.tokens > 0)
-    .map((p) => ({ ts: p.ts, tokens: p.tokens, contribution: p.contribution }))
-    .sort((a, b) => b.ts - a.ts)
+export type TrainingRow = EpochRecord
+
+export function toTrainingRows(records: EpochRecord[]): TrainingRow[] {
+  return [...records].sort((a, b) => b.ts - a.ts)
 }

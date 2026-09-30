@@ -13,10 +13,19 @@ export interface MinerStatus {
   rank: number | null
   numHotkeys: number | null
   contributionPerc: number | null
-  uploadedPartition: number | null
+  partitionLabel: string | null
   weightUploaded: number
   latestSampleAt: number | null
-  trainingPoints: { ts: number; tokens: number; networkTokens: number; contribution: number }[]
+  epochRecords: EpochRecord[]
+}
+
+export interface EpochRecord {
+  epoch: number
+  ts: number
+  tokens: number
+  rank: number | null
+  numHotkeys: number | null
+  contribution: number | null
 }
 
 export interface Payment {
@@ -27,6 +36,10 @@ export interface Payment {
 
 export interface RunInfo {
   runId: string
+  tier: string | null
+  model: string | null
+  modelSize: string | null
+  splits: number | null
   maxMiners: number
   activeMiners: number
   slotsRemaining: number

@@ -70,25 +70,39 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const settled = await Promise.allSettled([
     api('/v1/runs_occupancy') as Promise<{ run_ids: string[]; max_miners: number[]; active_miners: number[]; slots_remaining: number[] }>,
+    api('/runs') as Promise<{ runs: { run_id: string; state: string; metadata?: { model_name?: string; model_size?: string; n_splits?: number; description?: string } }[] }>,
     api(`/v1/entitlements/totals/hotkey/${hotkey}`) as Promise<{ total_amount_earned: number; total_amount_paid: number; total_amount_pending: number; total_amount_frozen: number; minimum_payout_amount: number }>,
     api(`/v1/entitlements/history/hotkey/${hotkey}`) as Promise<{ timestamps: number[]; alpha_amounts: number[]; statuses: string[] }>,
     api('/v1/entitlements/next_payout_timestamp') as Promise<{ next_payout_time: number }>,
     getUsdPrice(),
   ])
-  const [occupancyR, totalsR, historyR, payoutR, priceRes] = settled
+  const [occupancyR, runsMetaR, totalsR, historyR, payoutR, priceRes] = settled
   if (occupancyR.status === 'rejected') throw new Error('runs_occupancy failed')
 
   const occupancy = occupancyR.status === 'fulfilled' ? occupancyR.value : { run_ids: [] as string[], max_miners: [] as number[], active_miners: [] as number[], slots_remaining: [] as number[] }
+  const metaByRun = new Map((runsMetaR.status === 'fulfilled' ? runsMetaR.value.runs : []).map((r) => [r.run_id, r]))
+  // description 形如 "1B - Tier 0 (Bronze)";tier 取括号内的档位名
+  const tierOf = (runId: string): string | null => {
+    const desc = metaByRun.get(runId)?.metadata?.description ?? ''
+    const m = /\(([^)]+)\)/.exec(desc)
+    return m?.[1] ?? null
+  }
   const totals = totalsR.status === 'fulfilled' ? totalsR.value : { total_amount_earned: 0, total_amount_paid: 0, total_amount_pending: 0, total_amount_frozen: 0, minimum_payout_amount: 0 }
   const history = historyR.status === 'fulfilled' ? historyR.value : { timestamps: [] as number[], alpha_amounts: [] as number[], statuses: [] as string[] }
   const payoutTs = payoutR.status === 'fulfilled' ? payoutR.value : { next_payout_time: 0 }
 
-  const runs = occupancy.run_ids.map((runId, i) => ({
-    runId,
-    maxMiners: occupancy.max_miners[i],
-    activeMiners: occupancy.active_miners[i],
-    slotsRemaining: occupancy.slots_remaining[i],
-  }))
+  const runs = occupancy.run_ids.map((runId, i) => {
+    const meta = metaByRun.get(runId)
+    return {
+      runId,
+      tier: tierOf(runId),
+      model: meta?.metadata?.model_name ?? null,
+      modelSize: meta?.metadata?.model_size ?? null,
+      maxMiners: occupancy.max_miners[i],
+      activeMiners: occupancy.active_miners[i],
+      slotsRemaining: occupancy.slots_remaining[i],
+    }
+  })
 
   const membership = await findMinerRun(hotkey, occupancy.run_ids)
 
@@ -126,6 +140,25 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     const online = onlinePoints.length > 0
     const training = online && latestPoint !== null && latestPoint !== undefined && latestPoint.token_count > 0
 
+    // uploaded_partition_percs 是分区编号(0..n_splits-1),不是百分比;
+    // n_splits=3 时 0/1/2 对应 L0/L1/L2
+    const latestPartitionIdx = last >= 0 ? metrics.uploaded_partition_percs[last] ?? null : null
+    const partitionLabel = latestPartitionIdx !== null && Number.isFinite(latestPartitionIdx)
+      ? `第 ${latestPartitionIdx + 1} 段 (L${latestPartitionIdx})`
+      : null
+
+    const epochRecords = metrics.epochs
+      .map((epoch, i) => ({
+        epoch,
+        ts: metrics.timestamps[i] ?? 0,
+        tokens: metrics.token_counts[i] ?? 0,
+        rank: metrics.activation_ranks[i] ?? null,
+        numHotkeys: metrics.num_hotkeys_in_epochs[i] ?? null,
+        contribution: metrics.act_contribution_percs[i] ?? null,
+      }))
+      .filter((r) => r.tokens > 0)
+      .sort((a, b) => b.ts - a.ts)
+
     // “今日”按香港时间(官方结算时区)0 点起算
     const hkNow = new Date(Date.now() + 8 * 3600_000)
     const hkMidnightUTC = Date.UTC(hkNow.getUTCFullYear(), hkNow.getUTCMonth(), hkNow.getUTCDate()) / 1000 - 8 * 3600
@@ -150,7 +183,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       rank: last >= 0 ? metrics.activation_ranks[last] ?? null : null,
       numHotkeys: last >= 0 ? metrics.num_hotkeys_in_epochs[last] ?? null : null,
       contributionPerc: last >= 0 ? metrics.act_contribution_percs[last] ?? null : null,
-      uploadedPartition: last >= 0 ? metrics.uploaded_partition_percs[last] ?? null : null,
+      partitionLabel,
+      epochRecords,
       weightUploaded: last >= 0 ? metrics.weight_uploaded[last] ?? 0 : 0,
       latestSampleAt: last >= 0 ? metrics.timestamps[last] ?? null : null,
       trainingPoints: tokens.data_points

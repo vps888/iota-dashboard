@@ -57,7 +57,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
   const { data, error, loading, refresh, countdown, fetchedAtMs } = useDashboard(minerId)
   const now = Math.floor(Date.now() / 1000)
 
-  const trainingRows = useMemo(() => (data?.miner ? toTrainingRows(data.miner.trainingPoints) : []), [data])
+  const trainingRows = useMemo(() => (data?.miner ? toTrainingRows(data.miner.epochRecords) : []), [data])
 
   return (
     <div className="app-shell">
@@ -124,8 +124,8 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <strong>{data.miner?.runId ?? '—'}</strong>
                 </div>
                 <div className="metric">
-                  <span>模型分区</span>
-                  <strong>{data.miner?.uploadedPartition !== null && data.miner?.uploadedPartition !== undefined ? `${fmtNum(data.miner.uploadedPartition, 0)}%` : '—'}</strong>
+                  <span>负责分区</span>
+                  <strong>{data.miner?.partitionLabel ?? '—'}</strong>
                 </div>
                 <div className="metric">
                   <span>贡献占比</span>
@@ -152,7 +152,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
               <div className="panel-heading">
                 <div>
                   <span>TRAINING RECORDS / 训练记录</span>
-                  <h2>训练记录</h2>
+                  <h2>训练记录(按 Epoch)</h2>
                 </div>
               </div>
               {trainingRows.length === 0 ? (
@@ -162,16 +162,22 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <table>
                     <thead>
                       <tr>
+                        <th>Epoch</th>
                         <th>时间</th>
                         <th>Token 数</th>
+                        <th>激活数</th>
+                        <th>排名</th>
                         <th>贡献占比</th>
                       </tr>
                     </thead>
                     <tbody>
                       {trainingRows.map((r) => (
-                        <tr key={r.ts}>
+                        <tr key={r.epoch}>
+                          <td>#{r.epoch}</td>
                           <td>{fmtTime(r.ts)}</td>
                           <td>{fmtNum(r.tokens)}</td>
+                          <td>{r.tokens > 0 ? fmtNum(r.tokens / 3200) : '—'}</td>
+                          <td>{r.rank !== null && r.rank > 0 ? `${r.rank} / ${r.numHotkeys ?? '—'}` : '—'}</td>
                           <td>{fmtPct(r.contribution)}</td>
                         </tr>
                       ))}
@@ -187,15 +193,16 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <span>NETWORK / 全网状态</span>
                   <h2>全网状态</h2>
                 </div>
-                <span>{data.runs.length} 个任务</span>
+                <span>{data.runs.length} 个任务 · {data.runs[0]?.model ?? ''} {data.runs[0]?.modelSize ?? ''}</span>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>训练任务</th>
+                      <th>档位</th>
                       <th>名额</th>
-                      <th>在线矿机</th>
+                      <th>官方在线</th>
                       <th>剩余名额</th>
                       <th>占用率</th>
                     </tr>
@@ -204,9 +211,10 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                     {data.runs.map((r) => (
                       <tr key={r.runId} className={r.runId === data.miner?.runId ? 'is-mine' : ''}>
                         <td>{r.runId}</td>
+                        <td>{r.tier ?? '—'}</td>
                         <td>{fmtNum(r.maxMiners)}</td>
                         <td>{fmtNum(r.activeMiners)}</td>
-                        <td className={r.slotsRemaining === 0 ? 'zero' : ''}>{fmtNum(r.slotsRemaining)}</td>
+                        <td className={r.slotsRemaining === 0 ? 'zero' : ''}>{r.slotsRemaining === 0 ? '已满' : fmtNum(r.slotsRemaining)}</td>
                         <td>{r.maxMiners > 0 ? `${Math.round((r.activeMiners / r.maxMiners) * 100)}%` : '—'}</td>
                       </tr>
                     ))}
