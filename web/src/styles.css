@@ -28,6 +28,7 @@ button { font: inherit; cursor: pointer; }
 .connection { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 11px ui-monospace, monospace; }
 .connection i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .connection.is-connected { color: var(--positive); }
+.connection.is-warning { color: var(--warning); }
 .connection.is-connected i { background: var(--positive); }
 .refresh-btn { border: 1px solid var(--line); background: var(--panel-raised); color: var(--ink); padding: 7px 14px; font: 12px ui-monospace, monospace; }
 .refresh-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
@@ -57,15 +58,24 @@ button { font: inherit; cursor: pointer; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .status-dot.positive { background: var(--positive); }
 .status-dot.negative { background: var(--negative); }
+.status-dot.warning { background: var(--warning); }
+.status-dot.neutral { background: var(--faint); }
 
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px 16px; padding: 18px 19px 20px; }
 .earnings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.status-primary-grid { gap: 12px; padding-bottom: 14px; }
+.metric-primary { min-height: 64px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel-raised); }
+.metric-primary strong { font-size: 15px; }
+.metric-primary strong.strong { font-size: 17px; }
+.status-details-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 0 19px 20px; }
 .metric { min-width: 0; }
 .metric span { display: block; overflow: hidden; color: var(--muted); font: 10px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .metric strong { display: block; overflow: hidden; margin-top: 7px; color: var(--ink); font: 13px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .metric strong.strong { color: var(--accent); font-size: 16px; }
 .metric strong.fresh { color: var(--positive); }
 .metric strong.stale { color: var(--warning); }
+.metric strong.neutral { color: var(--muted); }
+.status-warning { padding: 10px 19px 0; color: var(--warning); font-size: 12px; line-height: 1.5; }
 
 .table-wrap { overflow-x: auto; }
 .table-wrap table { width: 100%; border-collapse: collapse; font: 12px/1 ui-monospace, monospace; }
@@ -88,12 +98,29 @@ button { font: inherit; cursor: pointer; }
 
 .app-footer { display: flex; justify-content: space-between; gap: 20px; padding: 16px 0 20px; border-top: 1px solid var(--line); color: var(--faint); font: 10px ui-monospace, monospace; }
 
+.link-btn { border: none; background: none; color: var(--accent); padding: 0; font: 13px ui-monospace, monospace; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+.modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgb(0 0 0 / .55); padding: 20px; }
+.modal { width: min(640px, 100%); border: 1px solid var(--line); background: var(--panel); box-shadow: 0 24px 64px rgb(0 0 0 / .35); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { margin: 0; font-size: 14px; font-weight: 550; }
+.modal-close { border: none; background: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.modal-close:hover { color: var(--ink); }
+.modal-body { padding: 20px; }
+.modal-body p { margin: 0 0 12px; color: var(--muted); font: 12px/1.7 ui-monospace, monospace; }
+.modal-body p.modal-note { font-size: 11px; color: var(--faint); }
+.modal-body button { border: 1px solid var(--accent); background: var(--accent); color: #1c120b; padding: 10px 18px; font: 600 12px ui-monospace, monospace; cursor: pointer; }
+.modal-body button:disabled { opacity: .5; cursor: default; }
+.token-command { margin: 12px 0; padding: 14px; border: 1px solid var(--line); background: var(--panel-raised); color: var(--accent); font: 11px/1.7 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; user-select: all; }
+.modal-actions { display: flex; gap: 10px; margin: 0 0 12px; }
+
 @media (max-width: 900px) {
   .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 650px) {
   .app-header, .page-content, .app-footer { width: calc(100% - 28px); }
   .metric-grid, .earnings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 12px; }
+  .status-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 12px; }
   .app-header { flex-wrap: wrap; }
   .app-footer { flex-direction: column; gap: 6px; }
 }

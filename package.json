@@ -5,10 +5,16 @@
   "license": "MIT",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "packages/iota-miner-tools",
+    "packages/iota-local-agent"
+  ],
   "scripts": {
     "build": "vite build --config web/vite.config.ts",
     "dev": "vite --config web/vite.config.ts",
-    "typecheck": "tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && npm run build --workspace=iota-miner-tools",
+    "test": "npm run build --workspace=iota-miner-tools && node --test packages/iota-miner-tools/test/*.test.mjs && npm run test:local-tools",
+    "test:local-tools": "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' && python3 -m unittest discover -s tools/tests -v || echo '跳过本地工具测试（需要 macOS 与 Python 3.9+）'",
     "deploy": "npm run build && wrangler pages deploy dist/web"
   },
   "dependencies": {

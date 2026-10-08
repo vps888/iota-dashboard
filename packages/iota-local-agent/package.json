@@ -1,0 +1,34 @@
+{
+  "name": "iota-local-agent",
+  "version": "0.1.0",
+  "description": "Local guardian and status reporter for IOTA Train at Home miners",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "iota-agent": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "iota-miner-tools": "*",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.5",
+    "typescript": "^5.9.0"
+  },
+  "types": "./dist/index.d.ts"
+}

@@ -1,18 +1,17 @@
+import { validateMinerId as validateMinerIdChecksum } from '../../packages/iota-miner-tools/src/ss58.js'
+import type { OfficialStatus } from '../../packages/iota-miner-tools/src/types.js'
 export interface MinerStatus {
   hotkey: string
   shortId: string
   name: string
-  runId: string
-  online: boolean
-  training: boolean
+  runId: string | null
+  online: boolean | null
+  training: boolean | null
   tokensPerActivation: number
   throughput: number
   throughputAvg: number
   activations: number
   tokens: number
-  rank: number | null
-  numHotkeys: number | null
-  contributionPerc: number | null
   partitionLabel: string | null
   lastContributionAt: number | null
   weightUploaded: number
@@ -46,10 +45,34 @@ export interface RunInfo {
   slotsRemaining: number
 }
 
+export interface LocalReport {
+  status: 'paused' | 'starting' | 'queued' | 'training' | 'waiting' | 'abnormal'
+  description: string
+  queuePosition: number | null
+  controlConnected: boolean
+  restarts: number
+  uptimeSec: number
+  os: string
+  agentVersion: string
+  reportedAt: number
+  reportedAtServer: number
+  stale: boolean
+}
+
 export interface DashboardData {
   fetchedAt: number
+  lookup: {
+    status: OfficialStatus
+    checkedAt: number
+    lastSuccessfulFetchAt: number | null
+    coverage: { successful: number; total: number }
+    stale: boolean
+    warning: string | null
+    sampleAt: number | null
+  }
   miner: MinerStatus | null
   todayEarned: number
+  yesterdayEarned: number
   totals: {
     earned: number
     paid: number
@@ -57,19 +80,18 @@ export interface DashboardData {
     frozen: number
     minimumPayout: number
   }
-  nextPayoutAt: number
   payments: Payment[]
   runs: RunInfo[]
   usdPerIota: number | null
+  localReport: LocalReport | null
 }
 
 const STORAGE_KEY = 'iota-dashboard:miner-id'
-const MINER_ID_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{45,55}$/
 const REFRESH_MS = 60_000
 
 export function getSavedMinerId(): string | null {
   const v = localStorage.getItem(STORAGE_KEY)
-  return v && MINER_ID_PATTERN.test(v) ? v : null
+  return v && validateMinerIdChecksum(v).valid ? v : null
 }
 
 export function saveMinerId(id: string): void {
@@ -81,7 +103,7 @@ export function clearMinerId(): void {
 }
 
 export function isValidMinerId(id: string): boolean {
-  return MINER_ID_PATTERN.test(id.trim())
+  return validateMinerIdChecksum(id.trim()).valid
 }
 
 export async function fetchDashboard(minerId: string): Promise<DashboardData> {
@@ -91,6 +113,27 @@ export async function fetchDashboard(minerId: string): Promise<DashboardData> {
     throw new Error(body?.message ?? `HTTP ${res.status}`)
   }
   return res.json()
+}
+
+export async function createToken(minerId: string): Promise<{ token: string; createdAt: number }> {
+  const res = await fetch('/api/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ miner: minerId.trim() }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { message?: string } | null
+    throw new Error(body?.message ?? `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function revokeToken(token: string): Promise<void> {
+  await fetch('/api/token', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
 }
 
 export function useCountdown(lastFetchMs: number | null): number {

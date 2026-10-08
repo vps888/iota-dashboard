@@ -1,5 +1,8 @@
 {
   "name": "iota-dashboard",
   "compatibility_date": "2026-05-01",
-  "pages_build_output_dir": "dist/web"
+  "pages_build_output_dir": "dist/web",
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "1a3972fdf0c1402e95ccb4d5f7e71177" }
+  ]
 }

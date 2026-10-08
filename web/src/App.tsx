@@ -1,7 +1,34 @@
 import { useMemo, useState, type ReactElement } from 'react'
-import { useDashboard, getSavedMinerId, saveMinerId, clearMinerId, isValidMinerId } from './api.js'
+import { useDashboard, getSavedMinerId, saveMinerId, clearMinerId, isValidMinerId, createToken } from './api.js'
 import { toTrainingRows } from './types.js'
-import { fmtNum, fmtIota, fmtUsd, fmtTime, fmtDate, fmtPct, fmtAgo } from './format.js'
+import { fmtNum, fmtIota, fmtUsd, fmtTime, fmtDate, fmtPct, fmtAgo, fmtContributionTime } from './format.js'
+import type { OfficialStatus } from '../../packages/iota-miner-tools/src/types.js'
+import type { LocalReport } from './api.js'
+
+const LOOKUP_STATUS: Record<OfficialStatus, { label: string; tone: string }> = {
+  contributing: { label: '官方采样：有训练贡献', tone: 'positive' },
+  waiting: { label: '官方采样：在线待任务', tone: 'positive' },
+  idle: { label: '官方采样：暂未参与', tone: 'warning' },
+  not_found: { label: '完整名单中未找到', tone: 'negative' },
+  unknown: { label: '状态待确认', tone: 'neutral' },
+  refresh_interrupted: { label: '官方数据刷新中断', tone: 'neutral' },
+}
+
+const LOCAL_STATUS: Record<LocalReport['status'], { label: string; tone: string }> = {
+  training: { label: '本地代理：训练中', tone: 'positive' },
+  waiting: { label: '本地代理：待任务', tone: 'positive' },
+  queued: { label: '本地代理：排队中', tone: 'warning' },
+  starting: { label: '本地代理：启动中', tone: 'warning' },
+  paused: { label: '本地代理：已暂停', tone: 'neutral' },
+  abnormal: { label: '本地代理：异常', tone: 'negative' },
+}
+
+function fmtUptime(sec: number): string {
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+  return `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`
+}
 
 export default function App(): ReactElement {
   const [minerId, setMinerId] = useState<string | null>(() => getSavedMinerId())
@@ -55,7 +82,9 @@ function SetupScreen({ onSubmit }: { onSubmit: (id: string) => void }): ReactEle
 
 function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void }): ReactElement {
   const { data, error, loading, refresh, countdown, fetchedAtMs } = useDashboard(minerId)
+  const [tokenOpen, setTokenOpen] = useState(false)
   const now = Math.floor(Date.now() / 1000)
+  const lookupStatus = LOOKUP_STATUS[data?.lookup.status ?? 'unknown']
 
   const trainingRows = useMemo(() => (data?.miner ? toTrainingRows(data.miner.epochRecords) : []), [data])
 
@@ -70,9 +99,9 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
           </div>
         </div>
         <div className="header-actions">
-          <span className="connection is-connected">
+          <span className={`connection ${error || data?.lookup.stale ? 'is-warning' : 'is-connected'}`}>
             <i />
-            {loading ? '加载中…' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
+            {loading ? '加载中…' : error ? '刷新失败 · 保留上次数据' : data?.lookup.stale ? '官方数据陈旧' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
           </span>
           <button className="refresh-btn" onClick={refresh} disabled={loading}>
             立即刷新
@@ -98,60 +127,132 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                   <h2>{data.miner?.name ?? 'Miner'}</h2>
                 </div>
                 <div className="panel-status">
-                  <div className="panel-status-main">
-                    <span className={`status-dot ${data.miner?.online ? 'positive' : 'negative'}`} />
-                    {data.miner?.online ? '在线' : '离线'}
+                  <div className="panel-status-main" title="官方名单状态是最新采样，不是本机实时心跳">
+                    <span className={`status-dot ${lookupStatus.tone}`} />
+                    {lookupStatus.label}
                   </div>
                 </div>
               </div>
-              <div className="metric-grid">
-                <div className="metric">
+              {data.lookup.warning && <div className="status-warning">{data.lookup.warning}</div>}
+              <div className="metric-grid status-primary-grid">
+                <div className="metric metric-primary">
                   <span>训练状态</span>
-                  <strong className={data.miner?.training ? 'fresh' : 'stale'}>
-                    {data.miner?.training ? '训练中' : data.miner?.online ? '等待任务' : '离线'}
+                  <strong className={data.miner?.training === true ? 'fresh' : data.miner?.training === false ? 'stale' : 'neutral'}>
+                    {data.miner?.training === true ? '训练中' : data.miner?.training === false ? data.miner?.online === true ? '等待任务' : data.miner?.online === false ? '未参与' : '待确认' : '待确认'}
                   </strong>
                 </div>
-                <div className="metric">
+                <div className="metric metric-primary">
                   <span>吞吐量</span>
                   <strong className="strong">{fmtNum(data.miner?.throughput, 0)}</strong>
                 </div>
-                <div className="metric">
+                <div className="metric metric-primary">
                   <span>激活数</span>
                   <strong>{fmtNum(data.miner?.activations, 0)}</strong>
                 </div>
-                <div className="metric">
+                <div className="metric metric-primary">
                   <span>训练任务</span>
                   <strong>{data.miner?.runId ?? '—'}</strong>
                 </div>
+                <div className="metric metric-primary">
+                  <span>昨日收益 (IOTA / USD)</span>
+                  <strong className="strong">
+                    {fmtIota(data.yesterdayEarned)} / {fmtUsd(data.yesterdayEarned, data.usdPerIota)}
+                  </strong>
+                </div>
+              </div>
+              <div className="status-details-grid">
                 <div className="metric">
                   <span>负责分区</span>
                   <strong>{data.miner?.partitionLabel ?? '—'}</strong>
                 </div>
                 <div className="metric">
-                  <span>贡献占比</span>
-                  <strong>{fmtPct(data.miner?.contributionPerc)}</strong>
+                  <span>官方采样时间</span>
+                  <strong>{fmtAgo(data.lookup.sampleAt, now)}</strong>
                 </div>
                 <div className="metric">
-                  <span>全网排名</span>
-                  <strong>
-                    {data.miner?.rank !== null && data.miner?.rank !== undefined ? `${data.miner.rank} / ${data.miner.numHotkeys ?? '—'}` : '—'}
-                  </strong>
+                  <span>完整名单更新时间</span>
+                  <strong>{fmtAgo(data.lookup.lastSuccessfulFetchAt, now)}</strong>
                 </div>
                 <div className="metric">
-                  <span>最近采样</span>
-                  <strong>{fmtAgo(data.miner?.latestSampleAt, now)}</strong>
+                  <span>任务名单覆盖</span>
+                  <strong>{data.lookup.coverage.successful} / {data.lookup.coverage.total}{data.lookup.stale ? ' · 含缓存' : ''}</strong>
                 </div>
                 <div className="metric">
                   <span>最后有效贡献</span>
-                  <strong className={data.miner?.lastContributionAt && now - data.miner.lastContributionAt > 3600 ? 'stale' : 'fresh'}>
-                    {data.miner?.lastContributionAt ? `${fmtAgo(data.miner.lastContributionAt, now)} · ${fmtTime(data.miner.lastContributionAt)}` : '—'}
+                  <strong className={data.miner?.lastContributionAt !== null && data.miner?.lastContributionAt !== undefined && now - data.miner.lastContributionAt > 3600 ? 'stale' : 'fresh'}>
+                    {fmtContributionTime(data.miner?.lastContributionAt, now)}
                   </strong>
                 </div>
-                <div className="metric">
-                  <span>下次支付</span>
-                  <strong>{fmtTime(data.nextPayoutAt)}</strong>
+              </div>
+            </section>
+
+            <section className="panel wide">
+              <div className="panel-heading">
+                <div>
+                  <span>LOCAL AGENT / 本地状态</span>
+                  <h2>本地代理</h2>
+                </div>
+                <div className="panel-status">
+                  {data.localReport ? (
+                    <div className="panel-status-main" title="来自本机 iota-agent 守护的实时上报,每三十秒一次">
+                      <span className={`status-dot ${data.localReport.stale ? 'warning' : LOCAL_STATUS[data.localReport.status].tone}`} />
+                      {data.localReport.stale ? '本地代理离线(超过 2.5 分钟无上报)' : LOCAL_STATUS[data.localReport.status].label}
+                    </div>
+                  ) : (
+                    <button className="refresh-btn" onClick={() => setTokenOpen(true)}>生成配对令牌</button>
+                  )}
                 </div>
               </div>
+              {data.localReport ? (
+                <>
+                  <div className="metric-grid status-primary-grid">
+                    <div className="metric metric-primary">
+                      <span>守护状态</span>
+                      <strong>{data.localReport.description}</strong>
+                    </div>
+                    <div className="metric metric-primary">
+                      <span>队列位置</span>
+                      <strong className="strong">{data.localReport.queuePosition !== null ? `第 ${data.localReport.queuePosition} 位` : '—'}</strong>
+                    </div>
+                    <div className="metric metric-primary">
+                      <span>控制连接</span>
+                      <strong className={data.localReport.controlConnected ? 'fresh' : 'stale'}>
+                        {data.localReport.controlConnected ? '正常' : '未连接'}
+                      </strong>
+                    </div>
+                    <div className="metric metric-primary">
+                      <span>自动重启次数</span>
+                      <strong>{fmtNum(data.localReport.restarts, 0)}</strong>
+                    </div>
+                    <div className="metric metric-primary">
+                      <span>守护运行时长</span>
+                      <strong>{fmtUptime(data.localReport.uptimeSec)}</strong>
+                    </div>
+                  </div>
+                  <div className="status-details-grid">
+                    <div className="metric">
+                      <span>上次上报</span>
+                      <strong>{fmtAgo(data.localReport.reportedAtServer, now)}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>代理版本</span>
+                      <strong>{data.localReport.agentVersion}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>操作系统</span>
+                      <strong>{data.localReport.os === 'macos' ? 'macOS' : 'Linux'}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>更换令牌</span>
+                      <strong><button className="link-btn" onClick={() => setTokenOpen(true)}>生成新配对令牌</button></strong>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="empty-state">
+                  未配置本地代理。在本机安装 iota-agent 并启用上报后,这里会显示矿机的实时本地状态(进程、队列、自动重启),与官方遥测互补。
+                </p>
+              )}
             </section>
 
             <section className="panel wide">
@@ -273,7 +374,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                         <td>{fmtDate(p.ts)}</td>
                         <td>{fmtTime(p.ts).slice(-5)}</td>
                         <td className={p.amount > 0 ? 'positive' : 'zero'}>{fmtIota(p.amount)}</td>
-                        <td>{p.status === 'settled' ? '已结算' : p.status}</td>
+                        <td>{p.status === 'settled' ? '已结算' : p.status === 'pending' ? '待结算' : p.status === 'frozen' ? '冻结中' : p.status}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -287,6 +388,70 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
       <footer className="app-footer">
         <span>数据来源:Macrocosmos 公开接口 · 每分钟自动刷新</span>
       </footer>
+
+      {tokenOpen && <TokenDialog minerId={minerId} onClose={() => setTokenOpen(false)} />}
+    </div>
+  )
+}
+
+function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => void }): ReactElement {
+  const [token, setToken] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const generate = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await createToken(minerId)
+      setToken(result.token)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const command = token
+    ? `iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`
+    : ''
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // 剪贴板不可用时用户可手动选择文本
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>本地代理配对令牌</h3>
+          <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        {!token ? (
+          <div className="modal-body">
+            <p>生成一个绑定当前 Miner ID 的上报令牌。令牌只显示一次,请立即保存。</p>
+            <p className="modal-note">本机 iota-agent 用它向仪表盘上报脱敏状态(守护状态、队列位置、重启次数);不含主机名、路径、日志或任何密钥。令牌 90 天后自动过期。</p>
+            {error && <div className="setup-error">{error}</div>}
+            <button onClick={generate} disabled={busy}>{busy ? '生成中…' : '生成令牌'}</button>
+          </div>
+        ) : (
+          <div className="modal-body">
+            <p>在矿机上运行以下命令启用上报:</p>
+            <pre className="token-command">{command}</pre>
+            <div className="modal-actions">
+              <button onClick={copy}>{copied ? '已复制' : '复制命令'}</button>
+            </div>
+            <p className="modal-note">关闭窗口后令牌不再显示;如需更换,重新生成即可(旧令牌在过期前仍有效,可在本机停用上报)。</p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

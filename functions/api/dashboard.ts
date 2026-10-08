@@ -1,17 +1,14 @@
-const API_BASE = 'https://iota-web.api.macrocosmos.ai/mainnet'
+import { officialClient } from '../../packages/iota-miner-tools/src/official.js'
+import { validateMinerId } from '../../packages/iota-miner-tools/src/ss58.js'
+import type { OfficialRuns } from '../../packages/iota-miner-tools/src/schema.js'
 const PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=iota-2&vs_currencies=usd'
-const MINER_ID_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{45,55}$/
 
 export interface Env {
   CACHE?: KVNamespace
 }
 
-async function api(path: string): Promise<unknown> {
-  const res = await fetch(API_BASE + path, {
-    headers: { 'User-Agent': 'iota-dashboard/1.0', Accept: 'application/json' },
-  })
-  if (!res.ok) throw new Error(`upstream ${res.status} for ${path}`)
-  return res.json()
+async function api<T>(path: string): Promise<T> {
+  return (await officialClient.request<T>(path)).data
 }
 
 // CoinGecko 免费接口按 IP 限流,Cloudflare 出口经常 429;
@@ -39,48 +36,38 @@ function shortId(id: string): string {
   return `${id.slice(0, 6)}…${id.slice(-6)}`
 }
 
-async function findMinerRun(hotkey: string, runIds: string[]): Promise<{ runId: string; rank: number | null; numHotkeys: number | null } | null> {
-  const probes = await Promise.all(
-    runIds.map(async (runId) => {
-      try {
-        const d = (await api(`/v1/epoch_miner_scores/runs/${runId}/hotkeys/${hotkey}/run_level_rank`)) as {
-          rank: number | null
-          num_hotkeys: number | null
-        }
-        if (d.rank !== null && d.rank !== undefined) return { runId, rank: d.rank, numHotkeys: d.num_hotkeys }
-      } catch {}
-      return null
-    }),
-  )
-  return probes.find((p): p is { runId: string; rank: number; numHotkeys: number | null } => p !== null) ?? null
-}
-
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const hotkey = new URL(request.url).searchParams.get('miner')?.trim() ?? ''
-  if (!MINER_ID_PATTERN.test(hotkey)) {
+  if (!validateMinerId(hotkey).valid) {
     return new Response(JSON.stringify({ code: 'invalid_miner_id', message: 'Miner ID 格式无效(应为 SS58 hotkey)' }), {
       status: 400,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     })
   }
 
-  const cacheKey = `dashboard:v1:${hotkey}`
-  const cached = await env.CACHE?.get(cacheKey, 'json')
-  if (cached) return json(cached, true)
+  const cacheKey = `dashboard:v2:${hotkey}`
+  const cached = await env.CACHE?.get(cacheKey, 'json') as { payload: unknown; cachedAt: number } | null
+  const cacheAge = cached ? Date.now() - cached.cachedAt : Infinity
+  if (cached && cacheAge < 60_000) {
+    return json(await withLocalReport(cached.payload, hotkey, env), true)
+  }
+  const stalePayload = cached && cacheAge <= 10 * 60_000 ? cached.payload : null
 
   const settled = await Promise.allSettled([
     api('/v1/runs_occupancy') as Promise<{ run_ids: string[]; max_miners: number[]; active_miners: number[]; slots_remaining: number[] }>,
-    api('/runs') as Promise<{ runs: { run_id: string; state: string; metadata?: { model_name?: string; model_size?: string; n_splits?: number; description?: string } }[] }>,
+    officialClient.request<OfficialRuns>('/runs'),
     api(`/v1/entitlements/totals/hotkey/${hotkey}`) as Promise<{ total_amount_earned: number; total_amount_paid: number; total_amount_pending: number; total_amount_frozen: number; minimum_payout_amount: number }>,
     api(`/v1/entitlements/history/hotkey/${hotkey}`) as Promise<{ timestamps: number[]; alpha_amounts: number[]; statuses: string[] }>,
-    api('/v1/entitlements/next_payout_timestamp') as Promise<{ next_payout_time: number }>,
     getUsdPrice(),
   ])
-  const [occupancyR, runsMetaR, totalsR, historyR, payoutR, priceRes] = settled
-  if (occupancyR.status === 'rejected') throw new Error('runs_occupancy failed')
+  const [occupancyR, runsMetaR, totalsR, historyR, priceRes] = settled
+  if (occupancyR.status === 'rejected') {
+    if (stalePayload) return staleDashboardResponse(await withLocalReport(stalePayload, hotkey, env))
+    throw new Error('runs_occupancy failed')
+  }
 
   const occupancy = occupancyR.status === 'fulfilled' ? occupancyR.value : { run_ids: [] as string[], max_miners: [] as number[], active_miners: [] as number[], slots_remaining: [] as number[] }
-  const metaByRun = new Map((runsMetaR.status === 'fulfilled' ? runsMetaR.value.runs : []).map((r) => [r.run_id, r]))
+  const metaByRun = new Map((runsMetaR.status === 'fulfilled' ? runsMetaR.value.data.runs : []).map((r) => [r.run_id, r]))
   // description 形如 "1B - Tier 0 (Bronze)";tier 取括号内的档位名
   const tierOf = (runId: string): string | null => {
     const desc = metaByRun.get(runId)?.metadata?.description ?? ''
@@ -89,7 +76,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   }
   const totals = totalsR.status === 'fulfilled' ? totalsR.value : { total_amount_earned: 0, total_amount_paid: 0, total_amount_pending: 0, total_amount_frozen: 0, minimum_payout_amount: 0 }
   const history = historyR.status === 'fulfilled' ? historyR.value : { timestamps: [] as number[], alpha_amounts: [] as number[], statuses: [] as string[] }
-  const payoutTs = payoutR.status === 'fulfilled' ? payoutR.value : { next_payout_time: 0 }
 
   const runs = occupancy.run_ids.map((runId, i) => {
     const meta = metaByRun.get(runId)
@@ -104,12 +90,32 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     }
   })
 
-  const membership = await findMinerRun(hotkey, occupancy.run_ids)
+  const officialLookup = runsMetaR.status === 'fulfilled'
+    ? await officialClient.lookupMiner(hotkey, runsMetaR.value)
+    : {
+        status: 'unknown' as const,
+        miner: null,
+        runId: null,
+        checkedAt: Date.now(),
+        lastSuccessfulFetchAt: null,
+        coverage: { successful: 0, total: 0 },
+        stale: false,
+        warning: '训练任务列表获取失败，无法确认 Miner ID 状态。',
+      }
+  const membership = officialLookup.miner
+
+  const hkNow = new Date(Date.now() + 8 * 3600_000)
+  const hkMidnightUTC = Date.UTC(hkNow.getUTCFullYear(), hkNow.getUTCMonth(), hkNow.getUTCDate()) / 1000 - 8 * 3600
+  const historyEntries = history.timestamps
+    .map((ts, i) => ({ ts, amount: history.alpha_amounts[i] ?? 0, status: history.statuses[i] ?? 'unknown' }))
+  const yesterdayEarnedUnits = historyEntries
+    .filter((e) => e.ts >= hkMidnightUTC - 86400 && e.ts < hkMidnightUTC)
+    .reduce((s, e) => s + e.amount, 0)
 
   let miner: object | null = null
   let todayEarnedUnits = 0
-  if (membership) {
-    const runId = membership.runId
+  if (officialLookup.runId) {
+    const runId = officialLookup.runId
     type Metrics = {
       epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[]
     }
@@ -124,7 +130,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       api(`/v1/epoch_miner_scores/runs/${runId}/hotkeys/${hotkey}/throughput?moving_average_window=3&period=week`) as Promise<Throughput>,
       api(`/miners/${hotkey}/runs/${runId}/tokens?period=week`) as Promise<Tokens>,
     ])
-    if (detail.some((d) => d.status === 'rejected')) throw new Error('miner detail failed')
+    if (detail.some((d) => d.status === 'rejected')) {
+      if (stalePayload) return staleDashboardResponse(stalePayload)
+      throw new Error('miner detail failed')
+    }
     const metrics = (detail[0] as PromiseFulfilledResult<Metrics>).value
     const throughput = (detail[1] as PromiseFulfilledResult<Throughput>).value
     const tokens = (detail[2] as PromiseFulfilledResult<Tokens>).value
@@ -132,13 +141,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     const last = metrics.epochs.length - 1
     const lastThr = throughput.epochs.length - 1
     const latestPoint = tokens.data_points.length ? tokens.data_points[tokens.data_points.length - 1] : null
-    const nowTs = Math.floor(Date.now() / 1000)
-    // “在线”=最近 2 个采样点里有产出 token(采样间隔约 30-40 分钟);
-    // 注册在 run 里不代表在线,只是保留名额
-    const ONLINE_WINDOW_S = 3600
-    const onlinePoints = tokens.data_points.filter((p) => p.token_count > 0 && nowTs - p.timestamp <= ONLINE_WINDOW_S)
-    const online = onlinePoints.length > 0
-    const training = online && latestPoint !== null && latestPoint !== undefined && latestPoint.token_count > 0
+    const online = membership?.isActive ?? null
+    const training = membership ? online === true && latestPoint !== null && latestPoint !== undefined && latestPoint.token_count > 0 : null
 
     // 最后一次有 token 产出的采样时间
     const lastProductivePoint = [...tokens.data_points].reverse().find((p) => p.token_count > 0)
@@ -163,34 +167,26 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       .sort((a, b) => b.ts - a.ts)
 
     // “今日”按香港时间(官方结算时区)0 点起算
-    const hkNow = new Date(Date.now() + 8 * 3600_000)
-    const hkMidnightUTC = Date.UTC(hkNow.getUTCFullYear(), hkNow.getUTCMonth(), hkNow.getUTCDate()) / 1000 - 8 * 3600
-    const todayEntries = history.timestamps
-      .map((ts, i) => ({ ts, amount: history.alpha_amounts[i] ?? 0, status: history.statuses[i] ?? 'unknown' }))
-      .filter((e) => e.ts >= hkMidnightUTC)
-    const todayEarned = todayEntries.reduce((s, e) => s + e.amount, 0)
-    todayEarnedUnits = todayEarned
+    const todayEntries = historyEntries.filter((e) => e.ts >= hkMidnightUTC)
+    todayEarnedUnits = todayEntries.reduce((s, e) => s + e.amount, 0)
 
     miner = {
       hotkey,
       shortId: shortId(hotkey),
-      name: `Miner ${shortId(hotkey)}`,
+      name: shortId(hotkey),
       runId,
       online,
       training,
       tokensPerActivation: 3200,
-      throughput: lastThr >= 0 ? throughput.throughputs[lastThr] ?? 0 : 0,
+      throughput: membership?.throughput ?? (lastThr >= 0 ? throughput.throughputs[lastThr] ?? 0 : 0),
       throughputAvg: lastThr >= 0 ? throughput.throughput_moving_avgs[lastThr] ?? 0 : 0,
-      activations: last >= 0 ? (metrics.token_counts[last] ?? 0) / 3200 : 0,
+      activations: membership?.activations ?? (last >= 0 ? (metrics.token_counts[last] ?? 0) / 3200 : 0),
       tokens: last >= 0 ? metrics.token_counts[last] ?? 0 : 0,
-      rank: last >= 0 ? metrics.activation_ranks[last] ?? null : null,
-      numHotkeys: last >= 0 ? metrics.num_hotkeys_in_epochs[last] ?? null : null,
-      contributionPerc: last >= 0 ? metrics.act_contribution_percs[last] ?? null : null,
       partitionLabel,
       lastContributionAt: lastProductivePoint?.timestamp ?? null,
       epochRecords,
       weightUploaded: last >= 0 ? metrics.weight_uploaded[last] ?? 0 : 0,
-      latestSampleAt: last >= 0 ? metrics.timestamps[last] ?? null : null,
+      latestSampleAt: membership?.sampleAt ?? (last >= 0 ? metrics.timestamps[last] ?? null : null),
       trainingPoints: tokens.data_points
         .filter((p) => p.token_count > 0)
         .map((p) => ({ ts: p.timestamp, tokens: p.token_count, networkTokens: p.network_tokens, contribution: p.contribution_fraction })),
@@ -205,8 +201,18 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const payload = {
     fetchedAt: Math.floor(Date.now() / 1000),
+    lookup: {
+      status: officialLookup.status,
+      checkedAt: Math.floor(officialLookup.checkedAt / 1000),
+      lastSuccessfulFetchAt: officialLookup.lastSuccessfulFetchAt === null ? null : Math.floor(officialLookup.lastSuccessfulFetchAt / 1000),
+      coverage: officialLookup.coverage,
+      stale: officialLookup.stale,
+      warning: officialLookup.warning,
+      sampleAt: officialLookup.miner?.sampleAt ?? null,
+    },
     miner,
     todayEarned: todayEarnedUnits,
+    yesterdayEarned: yesterdayEarnedUnits,
     totals: {
       earned: totals.total_amount_earned,
       paid: totals.total_amount_paid,
@@ -214,14 +220,65 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       frozen: totals.total_amount_frozen,
       minimumPayout: totals.minimum_payout_amount,
     },
-    nextPayoutAt: payoutTs.next_payout_time,
     payments,
     runs,
     usdPerIota,
   }
 
-  if (env.CACHE) await env.CACHE.put(cacheKey, JSON.stringify(payload), { expirationTtl: 60 })
-  return json(payload, false)
+  if (env.CACHE) await env.CACHE.put(cacheKey, JSON.stringify({ payload, cachedAt: Date.now() }), { expirationTtl: 600 })
+  return json(await withLocalReport(payload, hotkey, env), false)
+}
+
+interface LocalReportRecord {
+  status: string
+  description: string
+  queuePosition: number | null
+  controlConnected: boolean
+  restarts: number
+  uptimeSec: number
+  reportedAt: number
+  os: string
+  agentVersion: string
+  hotkey: string
+  reportedAtServer: number
+}
+
+// 本地上报每次读取时附加,不进 60 秒缓存,否则离线检测会滞后
+async function withLocalReport(payload: unknown, hotkey: string, env: Env): Promise<unknown> {
+  const record = await env.CACHE?.get(`local-report:${hotkey}`, 'json') as LocalReportRecord | null
+  if (!record || typeof record.reportedAtServer !== 'number') return { ...(payload as object), localReport: null }
+  return {
+    ...(payload as object),
+    localReport: {
+      status: record.status,
+      description: record.description,
+      queuePosition: record.queuePosition ?? null,
+      controlConnected: record.controlConnected,
+      restarts: record.restarts,
+      uptimeSec: record.uptimeSec,
+      os: record.os,
+      agentVersion: record.agentVersion,
+      reportedAt: record.reportedAt,
+      reportedAtServer: record.reportedAtServer,
+      stale: Math.floor(Date.now() / 1000) - record.reportedAtServer > 150,
+    },
+  }
+}
+
+function staleDashboardResponse(payload: unknown): Response {
+  if (!payload || typeof payload !== 'object') throw new Error('cached dashboard payload invalid')
+  const data = payload as { lookup?: Record<string, unknown> }
+  const lastSuccessfulFetchAt = typeof data.lookup?.lastSuccessfulFetchAt === 'number' ? data.lookup.lastSuccessfulFetchAt : null
+  const refreshInterrupted = lastSuccessfulFetchAt === null || Date.now() / 1000 - lastSuccessfulFetchAt > 5 * 60
+  return json({
+    ...data,
+    lookup: {
+      ...data.lookup,
+      status: refreshInterrupted ? 'refresh_interrupted' : data.lookup?.status ?? 'unknown',
+      stale: true,
+      warning: '官方接口暂时不可用，显示的是最近一次成功读取的数据。',
+    },
+  }, true)
 }
 
 function json(data: unknown, cached: boolean): Response {

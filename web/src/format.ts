@@ -48,3 +48,22 @@ export function fmtAgo(ts: number | null | undefined, now: number): string {
   if (diff < 3600) return `${Math.round(diff / 60)} 分钟前`
   return `${Math.round(diff / 3600)} 小时前`
 }
+
+export function fmtContributionTime(ts: number | null | undefined, now: number): string {
+  if (ts === null || ts === undefined) return '—'
+  const diff = Math.max(0, now - ts)
+  if (diff > 24 * 3600) {
+    return new Date(ts * 1000).toLocaleString('zh-CN', {
+      timeZone: BJ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+  }
+  const minutes = Math.floor(diff / 60)
+  if (minutes < 60) return `${minutes}分钟前`
+  return `${Math.floor(minutes / 60)}小时${minutes % 60}分钟前`
+}
