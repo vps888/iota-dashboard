@@ -1,6 +1,7 @@
+#!/usr/bin/env node
 import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import process from 'node:process'
-import { validateMinerId } from 'iota-miner-tools'
+import { validateMinerId } from './ss58.js'
 import { LOCK_PATH } from './paths.js'
 import { loadConfig, updateConfig } from './config.js'
 import { readState, saveState, event, clockString } from './state.js'
