@@ -118,8 +118,12 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
           </div>
         )}
         {!data && loading && <div className="empty-state">正在读取矿机数据…</div>}
-        {data && (
-          <>
+        {data && (() => {
+          const onlineOfficial = data.lookup.status === 'contributing' || data.lookup.status === 'waiting'
+          const onlineLocal = data.localReport !== null && !data.localReport.stale
+            && ['training', 'waiting', 'queued', 'starting'].includes(data.localReport.status)
+          const minerOnline = onlineOfficial || onlineLocal
+          const minerPanel = (
             <section className="panel wide">
               <div className="panel-heading">
                 <div>
@@ -185,7 +189,9 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                 </div>
               </div>
             </section>
+          )
 
+          const localPanel = (
             <section className="panel wide">
               <div className="panel-heading">
                 <div>
@@ -199,17 +205,13 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                       {data.localReport.stale ? '本地代理离线(超过 2.5 分钟无上报)' : LOCAL_STATUS[data.localReport.status].label}
                     </div>
                   ) : (
-                    <button className="refresh-btn" onClick={() => setTokenOpen(true)}>生成配对令牌</button>
+                    <button className="setup-agent-btn" onClick={() => setTokenOpen(true)}>配置本地管理 Agent</button>
                   )}
                 </div>
               </div>
               {data.localReport ? (
                 <>
                   <div className="metric-grid status-primary-grid">
-                    <div className="metric metric-primary">
-                      <span>守护状态</span>
-                      <strong>{data.localReport.description}</strong>
-                    </div>
                     <div className="metric metric-primary">
                       <span>队列位置</span>
                       <strong className="strong">{data.localReport.queuePosition !== null ? `第 ${data.localReport.queuePosition} 位` : '—'}</strong>
@@ -228,12 +230,13 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                       <span>守护运行时长</span>
                       <strong>{fmtUptime(data.localReport.uptimeSec)}</strong>
                     </div>
-                  </div>
-                  <div className="status-details-grid">
-                    <div className="metric">
+                    <div className="metric metric-primary">
                       <span>上次上报</span>
                       <strong>{fmtAgo(data.localReport.reportedAtServer, now)}</strong>
                     </div>
+                  </div>
+                  <p className="status-note">守护状态：{data.localReport.description}</p>
+                  <div className="status-details-grid">
                     <div className="metric">
                       <span>代理版本</span>
                       <strong>{data.localReport.agentVersion}</strong>
@@ -244,16 +247,22 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                     </div>
                     <div className="metric">
                       <span>更换令牌</span>
-                      <strong><button className="link-btn" onClick={() => setTokenOpen(true)}>生成新配对令牌</button></strong>
+                      <strong><button className="link-btn" onClick={() => setTokenOpen(true)}>配置本地管理 Agent</button></strong>
                     </div>
                   </div>
                 </>
               ) : (
-                <p className="empty-state">
+                    <p className="empty-state">
                   未配置本地代理。在本机安装 iota-agent 并启用上报后,这里会显示矿机的实时本地状态(进程、队列、自动重启),与官方遥测互补。
                 </p>
               )}
             </section>
+          )
+
+          return (
+            <>
+              {minerOnline ? minerPanel : localPanel}
+              {minerOnline ? localPanel : minerPanel}
 
             <section className="panel wide">
               <div className="panel-heading">
@@ -381,8 +390,9 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                 </table>
               </div>
             </section>
-          </>
-        )}
+            </>
+          )
+        })()}
       </main>
 
       <footer className="app-footer">
@@ -398,7 +408,7 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
   const [token, setToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copiedStep, setCopiedStep] = useState<number | null>(null)
 
   const generate = async () => {
     setBusy(true)
@@ -413,15 +423,17 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
     }
   }
 
-  const command = token
-    ? `iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`
-    : ''
+  const steps = token ? [
+    { title: '1 · 全局安装(矿机上执行一次)', command: 'npm install -g iota-agent' },
+    { title: '2 · 配对令牌', command: `iota-agent install && iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}` },
+    { title: '3 · 优化启动(替代直接打开 IOTA 应用)', command: 'iota-agent start' },
+  ] : []
 
-  const copy = async () => {
+  const copy = async (index: number, text: string) => {
     try {
-      await navigator.clipboard.writeText(command)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(text)
+      setCopiedStep(index)
+      setTimeout(() => setCopiedStep(null), 2000)
     } catch {
       // 剪贴板不可用时用户可手动选择文本
     }
@@ -431,24 +443,28 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>本地代理配对令牌</h3>
+          <h3>配置本地管理 Agent</h3>
           <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </div>
         {!token ? (
           <div className="modal-body">
-            <p>生成一个绑定当前 Miner ID 的上报令牌。令牌只显示一次,请立即保存。</p>
-            <p className="modal-note">本机 iota-agent 用它向仪表盘上报脱敏状态(守护状态、队列位置、重启次数);不含主机名、路径、日志或任何密钥。令牌 90 天后自动过期。</p>
+            <p>iota-agent 安装在矿机本机,负责守护进程(异常自动重启)、优化启动,并经你授权后每 30 秒向本仪表盘上报脱敏状态。需要 macOS、Node 20+ 与已安装的官方 IOTA 应用。</p>
+            <p className="modal-note">上报内容仅含:守护状态、队列位置、控制连接、重启次数、运行时长;不含主机名、路径、日志或任何密钥。令牌绑定当前 Miner ID,只显示一次,90 天自动过期。</p>
             {error && <div className="setup-error">{error}</div>}
-            <button onClick={generate} disabled={busy}>{busy ? '生成中…' : '生成令牌'}</button>
+            <button onClick={generate} disabled={busy}>{busy ? '生成中…' : '生成配对令牌'}</button>
           </div>
         ) : (
           <div className="modal-body">
-            <p>在矿机上运行以下命令启用上报:</p>
-            <pre className="token-command">{command}</pre>
-            <div className="modal-actions">
-              <button onClick={copy}>{copied ? '已复制' : '复制命令'}</button>
-            </div>
-            <p className="modal-note">关闭窗口后令牌不再显示;如需更换,重新生成即可(旧令牌在过期前仍有效,可在本机停用上报)。</p>
+            {steps.map((step, i) => (
+              <div key={i} className="setup-step">
+                <div className="setup-step-head">
+                  <span>{step.title}</span>
+                  <button onClick={() => copy(i, step.command)}>{copiedStep === i ? '已复制' : '复制'}</button>
+                </div>
+                <pre className="token-command">{step.command}</pre>
+              </div>
+            ))}
+            <p className="modal-note">关闭窗口后令牌不再显示;如需更换,重新生成即可(旧令牌在过期前仍有效,可在矿机上执行 iota-agent report --disable 停用)。</p>
           </div>
         )}
       </div>
