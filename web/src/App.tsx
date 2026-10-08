@@ -235,7 +235,6 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                       <strong>{fmtAgo(data.localReport.reportedAtServer, now)}</strong>
                     </div>
                   </div>
-                  <p className="status-note">守护状态：{data.localReport.description}</p>
                   <div className="status-details-grid">
                     <div className="metric">
                       <span>代理版本</span>

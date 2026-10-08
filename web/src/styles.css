@@ -69,7 +69,6 @@ button { font: inherit; cursor: pointer; }
 .metric-primary strong.strong { font-size: 17px; }
 .status-details-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; padding: 0 19px 20px; }
 .status-details-grid .metric { padding: 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel-raised); }
-.status-note { padding: 12px 19px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .metric { min-width: 0; }
 .metric span { display: block; overflow: hidden; color: var(--muted); font: 10px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .metric strong { display: block; overflow: hidden; margin-top: 7px; color: var(--ink); font: 13px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
