@@ -92,17 +92,16 @@ function display(state: Partial<GuardianState>): void {
 async function runGuardian(once: boolean): Promise<void> {
   if (!appInstalled()) fail('找不到官方 IOTA 应用。请先把 IOTA Train at Home.app 放进"应用程序"文件夹。')
   acquireLock()
-  const config = await loadConfig()
-  const reporter = config ? createReporter(config) : null
-  const sink = new ReportSink(reporter, event)
   const previous = await readState<GuardianState>()
   const agentStartedAt = previous.agentStartedAt ?? Date.now() / 1000
   let totalRestarts = previous.totalRestarts ?? 0
   if (!once) await event('守护启动:每三十秒检查;连续三次异常才重启;十五分钟退避;每小时最多三次')
-  const reportEnabled = Boolean(reporter?.enabled)
 
   while (true) {
     try {
+      // 每轮重读配置,让 report --enable/--disable 无需重启守护即生效
+      const config = await loadConfig()
+      const sink = new ReportSink(config ? createReporter(config) : null, event)
       const { state, rows } = await poll(previous, agentStartedAt, totalRestarts)
       const action = decision(state, Date.now() / 1000)
       state.recoveryNote = action === null || action === 'restart' ? null : action
@@ -127,7 +126,7 @@ async function runGuardian(once: boolean): Promise<void> {
       if (state.status !== previous.status || state.queuePosition !== previous.queuePosition) {
         await event(state.description)
       }
-      if (reportEnabled) {
+      {
         const payload: ReportPayload = {
           status: state.status,
           description: state.description,
