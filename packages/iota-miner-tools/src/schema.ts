@@ -81,6 +81,18 @@ const tokens = z.object({
   })),
 }).passthrough()
 
+const noidReport = z.object({
+  mode: z.enum(['training', 'default', 'disabled', 'unmanaged', 'error']),
+  running: z.boolean().nullable(),
+  cpuDuty: z.number().int().min(10).max(100).nullable(),
+  gpuDuty: z.number().int().min(10).max(100).nullable(),
+  cpuRate: count.nullable(),
+  gpuRate: count.nullable(),
+  accepted: z.number().int().nonnegative().nullable(),
+  rejected: z.number().int().nonnegative().nullable(),
+  stale: z.number().int().nonnegative().nullable(),
+}).strict()
+
 export const localReportInput = z.object({
   status: z.enum(['paused', 'starting', 'queued', 'training', 'waiting', 'abnormal']),
   description: z.string().max(200),
@@ -91,6 +103,7 @@ export const localReportInput = z.object({
   reportedAt: z.number().int().positive(),
   os: z.enum(['macos', 'linux']),
   agentVersion: z.string().max(16),
+  noid: noidReport.nullable().optional(),
 }).strict()
 
 export type LocalReportInput = z.infer<typeof localReportInput>

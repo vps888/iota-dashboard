@@ -45,6 +45,18 @@ export interface RunInfo {
   slotsRemaining: number
 }
 
+export interface LocalNoidReport {
+  mode: 'training' | 'default' | 'disabled' | 'unmanaged' | 'error'
+  running: boolean | null
+  cpuDuty: number | null
+  gpuDuty: number | null
+  cpuRate: number | null
+  gpuRate: number | null
+  accepted: number | null
+  rejected: number | null
+  stale: number | null
+}
+
 export interface LocalReport {
   status: 'paused' | 'starting' | 'queued' | 'training' | 'waiting' | 'abnormal'
   description: string
@@ -57,6 +69,7 @@ export interface LocalReport {
   reportedAt: number
   reportedAtServer: number
   stale: boolean
+  noid: LocalNoidReport | null
 }
 
 export interface DashboardData {

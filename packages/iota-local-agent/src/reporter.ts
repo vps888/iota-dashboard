@@ -4,6 +4,18 @@ import { platform } from 'node:os'
 
 export const AGENT_VERSION = '0.1.0'
 
+export interface NoidReportPayload {
+  mode: 'training' | 'default' | 'disabled' | 'unmanaged' | 'error'
+  running: boolean | null
+  cpuDuty: number | null
+  gpuDuty: number | null
+  cpuRate: number | null
+  gpuRate: number | null
+  accepted: number | null
+  rejected: number | null
+  stale: number | null
+}
+
 export interface ReportPayload {
   status: string
   description: string
@@ -14,6 +26,7 @@ export interface ReportPayload {
   reportedAt: number
   os: 'macos' | 'linux'
   agentVersion: string
+  noid?: NoidReportPayload | null
 }
 
 export interface Reporter {

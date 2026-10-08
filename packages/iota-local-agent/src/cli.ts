@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { validateMinerId } from './ss58.js'
 import { LOCK_PATH } from './paths.js'
-import { loadConfig, updateConfig } from './config.js'
+import { loadConfig, updateConfig, type AgentConfig } from './config.js'
 import { readState, saveState, event, clockString } from './state.js'
 import {
   INTERVAL_SEC, processes, logRecords, parseLogs, health, classify, decision,
-  terminateIota, appExecutablePath, workerExecutablePath, type GuardianState,
+  terminateIota, appExecutablePath, workerExecutablePath, type GuardianState, type NoidControlState,
 } from './guardian.js'
 import { startOptimized, appInstalled } from './launcher.js'
 import { installLaunchAgent, uninstallLaunchAgent } from './launchagent.js'
+import { reconcileNoid, resetNoidDuty } from './noid-controller.js'
 import { createReporter, ReportSink, AGENT_VERSION, currentOs, type ReportPayload } from './reporter.js'
 
 function usage(): void {
@@ -22,6 +24,9 @@ function usage(): void {
   iota-agent run [--once]         运行守护循环(--once 只检查一轮,不重启)
   iota-agent status               显示最近一次守护结果
   iota-agent start                优化启动:先起本地中继再拉起官方应用
+  iota-agent noid enable [--app <path>] 启用 NOID 自动启动与负载调度
+  iota-agent noid disable         关闭调度并恢复 NOID 默认负载(不停止挖矿)
+  iota-agent noid status           显示 NOID 调度配置与最近状态
   iota-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>
                                   启用状态上报(默认关闭)
   iota-agent report --disable     停用状态上报`)
@@ -76,6 +81,7 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
     recoveryNote: null,
     agentStartedAt,
     totalRestarts,
+    noidControl: previous.noidControl ?? null,
   }
   return { state, rows }
 }
@@ -87,6 +93,51 @@ function display(state: Partial<GuardianState>): void {
   if (state.queueUpdatedAt) console.log('队列更新时间:', clockString(state.queueUpdatedAt))
   if (state.lastRestartAt) console.log('最近自动重启:', clockString(state.lastRestartAt))
   if (state.recoveryNote) console.log('恢复说明:', state.recoveryNote)
+  if (state.noidControl?.enabled) {
+    const target = state.noidControl.cpuDuty === null || state.noidControl.gpuDuty === null
+      ? '负载未知'
+      : `CPU ${state.noidControl.cpuDuty}% / GPU ${state.noidControl.gpuDuty}%`
+    console.log('NOID 调度:', `${state.noidControl.mode}; ${target}${state.noidControl.error ? `; ${state.noidControl.error}` : ''}`)
+  }
+}
+
+function noidChanged(previous: NoidControlState | null | undefined, next: NoidControlState): boolean {
+  return !previous || previous.mode !== next.mode || previous.running !== next.running ||
+    previous.cpuDuty !== next.cpuDuty || previous.gpuDuty !== next.gpuDuty || previous.error !== next.error
+}
+
+function noidEventMessage(state: NoidControlState): string {
+  if (state.mode === 'training') return 'NOID 负载已降至 CPU/GPU 10%（IOTA 正在训练）'
+  if (state.mode === 'default') return 'NOID 已恢复默认负载（IOTA 未处于训练状态）'
+  if (state.mode === 'unmanaged') return `NOID 未接管：${state.error ?? '存在未受控进程'}`
+  if (state.mode === 'disabled') return 'NOID 自动调度已关闭'
+  return `NOID 调度异常：${state.error ?? '控制失败'}`
+}
+
+async function noidCommand(args: string[]): Promise<void> {
+  const [action, ...options] = args
+  if (action === 'enable') {
+    const app = argValue(options, '--app')
+    if (app && !existsSync(join(resolve(app), 'Contents', 'MacOS', 'NOIDMiner'))) fail('--app 必须指向 NOID Miner.app')
+    await updateConfig({ noidManaged: true, ...(app ? { noidAppPath: resolve(app) } : {}) })
+    console.log('NOID 自动调度已启用；正在运行的守护会在下一轮(最多 30 秒)应用策略。')
+    return
+  }
+  if (action === 'disable') {
+    await updateConfig({ noidManaged: false })
+    console.log('NOID 自动调度已关闭；守护会恢复默认负载，不会停止矿工。')
+    return
+  }
+  if (action === 'status') {
+    const config = await loadConfig()
+    const state = await readState<GuardianState>()
+    console.log('自动调度:', config?.noidManaged ? '已启用' : '已关闭')
+    console.log('应用路径:', config?.noidAppPath ?? '自动查找 /Applications/NOID Miner.app')
+    console.log('最近状态:', state.noidControl?.mode ?? '尚无记录')
+    if (state.noidControl?.error) console.log('说明:', state.noidControl.error)
+    return
+  }
+  fail('用法:iota-agent noid enable [--app <path>] | disable | status')
 }
 
 async function runGuardian(once: boolean): Promise<void> {
@@ -98,11 +149,59 @@ async function runGuardian(once: boolean): Promise<void> {
   if (!once) await event('守护启动:每三十秒检查;连续三次异常才重启;十五分钟退避;每小时最多三次')
 
   while (true) {
+    let config: AgentConfig | null = null
     try {
-      // 每轮重读配置,让 report --enable/--disable 无需重启守护即生效
-      const config = await loadConfig()
+      // 每轮重读配置,让 report 与 NOID 调度开关无需重启守护即生效
+      config = await loadConfig()
       const sink = new ReportSink(config ? createReporter(config) : null, event)
       const { state, rows } = await poll(previous, agentStartedAt, totalRestarts)
+      if (!once && config?.noidManaged) {
+        let noid: NoidControlState
+        try {
+          noid = await reconcileNoid(state.status, config, rows)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          await event(`NOID 控制失败，回退默认负载:${message}`)
+          try {
+            noid = await reconcileNoid(null, config, rows)
+          } catch (fallbackError) {
+            noid = {
+              enabled: true,
+              mode: 'error',
+              running: null,
+              cpuDuty: null,
+              gpuDuty: null,
+              cpuRate: null,
+              gpuRate: null,
+              accepted: null,
+              rejected: null,
+              stale: null,
+              error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+              updatedAt: new Date().toISOString(),
+            }
+          }
+        }
+        state.noidControl = noid
+        if (noidChanged(previous.noidControl, noid)) await event(noidEventMessage(noid))
+      } else if (!once && previous.noidControl?.enabled) {
+        let resetError: string | null = null
+        try {
+          await resetNoidDuty(rows)
+        } catch (error) {
+          resetError = error instanceof Error ? error.message : String(error)
+        }
+        const disabled: NoidControlState = {
+          ...previous.noidControl,
+          enabled: false,
+          mode: resetError ? 'error' : 'disabled',
+          cpuDuty: resetError ? previous.noidControl.cpuDuty : null,
+          gpuDuty: resetError ? previous.noidControl.gpuDuty : null,
+          error: resetError,
+          updatedAt: new Date().toISOString(),
+        }
+        state.noidControl = disabled
+        if (noidChanged(previous.noidControl, disabled)) await event(noidEventMessage(disabled))
+      }
       const action = decision(state, Date.now() / 1000)
       state.recoveryNote = action === null || action === 'restart' ? null : action
       if (!once && action === 'restart') {
@@ -137,6 +236,17 @@ async function runGuardian(once: boolean): Promise<void> {
           reportedAt: Math.floor(Date.now() / 1000),
           os: currentOs(),
           agentVersion: AGENT_VERSION,
+          noid: state.noidControl ? {
+            mode: state.noidControl.mode,
+            running: state.noidControl.running,
+            cpuDuty: state.noidControl.cpuDuty,
+            gpuDuty: state.noidControl.gpuDuty,
+            cpuRate: state.noidControl.cpuRate,
+            gpuRate: state.noidControl.gpuRate,
+            accepted: state.noidControl.accepted,
+            rejected: state.noidControl.rejected,
+            stale: state.noidControl.stale,
+          } : null,
         }
         await sink.submit(payload)
       }
@@ -147,8 +257,20 @@ async function runGuardian(once: boolean): Promise<void> {
         return
       }
     } catch (error) {
-      // 检查失败不等于矿工失败:监控出错时绝不重启
+      // 检查失败不等于矿工失败:监控出错时绝不重启 IOTA
       await event(`监控检查失败:${error instanceof Error ? error.message : String(error)};本轮不执行重启`)
+      if (!once && config?.noidManaged) {
+        try {
+          const rows = await processes().catch(() => null)
+          const noid = await reconcileNoid(null, config, rows)
+          if (noidChanged(previous.noidControl, noid)) await event(noidEventMessage(noid))
+          previous.noidControl = noid
+          const saved = await readState<GuardianState>()
+          await saveState({ ...saved, noidControl: noid })
+        } catch (noidError) {
+          await event(`NOID 默认负载回退失败:${noidError instanceof Error ? noidError.message : String(noidError)}`)
+        }
+      }
       if (once) throw error
     }
     await new Promise((r) => setTimeout(r, INTERVAL_SEC * 1000))
@@ -183,6 +305,9 @@ async function main(): Promise<void> {
     case 'start':
       if (!appInstalled()) fail('找不到官方 IOTA 应用。请先把 IOTA Train at Home.app 放进"应用程序"文件夹。')
       await startOptimized()
+      break
+    case 'noid':
+      await noidCommand(args)
       break
     case 'report': {
       if (args.includes('--disable')) {

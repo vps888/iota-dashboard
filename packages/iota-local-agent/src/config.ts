@@ -6,6 +6,8 @@ export interface AgentConfig {
   token: string
   minerId: string
   reportEnabled: boolean
+  noidManaged?: boolean
+  noidAppPath?: string
 }
 
 export async function loadConfig(): Promise<AgentConfig | null> {
@@ -18,7 +20,7 @@ export async function saveConfig(config: AgentConfig): Promise<void> {
 
 export async function updateConfig(patch: Partial<AgentConfig>): Promise<AgentConfig> {
   const current = await loadConfig()
-  const next = { ...(current ?? { dashboardUrl: '', token: '', minerId: '', reportEnabled: false }), ...patch }
+  const next = { ...(current ?? { dashboardUrl: '', token: '', minerId: '', reportEnabled: false, noidManaged: false }), ...patch }
   await saveConfig(next)
   return next
 }

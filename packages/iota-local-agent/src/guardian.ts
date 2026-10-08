@@ -254,18 +254,33 @@ export function classify(
   if (control.expectedHostPid !== appPid || !control.connected) {
     return { status: 'abnormal', description: '矿工与桌面程序的控制连接断开', bad: true }
   }
+  if (evidence.trainingAt && now - evidence.trainingAt < 300) {
+    return { status: 'training', description: '最近五分钟有实际训练活动', bad: false }
+  }
   if (evidence.queueStatus === 'queued') {
     const stale = now - (evidence.queueUpdatedAt ?? 0) > 900
     const base = evidence.queuePosition !== null ? `官方排队第 ${evidence.queuePosition} 位` : '等待官方分配训练任务'
     return { status: 'queued', description: base + (stale ? ';位置超过十五分钟未更新,暂不重启以免丢失队列' : ''), bad: false }
   }
-  if (evidence.trainingAt && now - evidence.trainingAt < 300) {
-    return { status: 'training', description: '最近五分钟有实际训练活动', bad: false }
-  }
   if (now - evidence.lastActivityAt > 1800) {
     return { status: 'abnormal', description: '矿工三十分钟没有任何活动,且未处于排队状态', bad: true }
   }
   return { status: 'waiting', description: '控制连接正常,等待注册、模型准备或训练任务', bad: false }
+}
+
+export interface NoidControlState {
+  enabled: boolean
+  mode: 'training' | 'default' | 'disabled' | 'unmanaged' | 'error'
+  running: boolean | null
+  cpuDuty: number | null
+  gpuDuty: number | null
+  cpuRate: number | null
+  gpuRate: number | null
+  accepted: number | null
+  rejected: number | null
+  stale: number | null
+  error: string | null
+  updatedAt: string
 }
 
 export interface GuardianState {
@@ -292,6 +307,7 @@ export interface GuardianState {
   recoveryNote: string | null
   agentStartedAt: number
   totalRestarts: number
+  noidControl?: NoidControlState | null
 }
 
 export function decision(state: GuardianState, now: number): 'restart' | string | null {

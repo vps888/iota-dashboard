@@ -1,6 +1,6 @@
 import { officialClient } from '../../packages/iota-miner-tools/src/official.js'
 import { validateMinerId } from '../../packages/iota-miner-tools/src/ss58.js'
-import type { OfficialRuns } from '../../packages/iota-miner-tools/src/schema.js'
+import type { OfficialRuns, LocalReportInput } from '../../packages/iota-miner-tools/src/schema.js'
 const PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=iota-2&vs_currencies=usd'
 
 export interface Env {
@@ -229,16 +229,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   return json(await withLocalReport(payload, hotkey, env), false)
 }
 
-interface LocalReportRecord {
-  status: string
-  description: string
-  queuePosition: number | null
-  controlConnected: boolean
-  restarts: number
-  uptimeSec: number
-  reportedAt: number
-  os: string
-  agentVersion: string
+interface LocalReportRecord extends LocalReportInput {
   hotkey: string
   reportedAtServer: number
 }
@@ -261,6 +252,7 @@ async function withLocalReport(payload: unknown, hotkey: string, env: Env): Prom
       reportedAt: record.reportedAt,
       reportedAtServer: record.reportedAtServer,
       stale: Math.floor(Date.now() / 1000) - record.reportedAtServer > 150,
+      noid: record.noid ?? null,
     },
   }
 }

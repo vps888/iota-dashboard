@@ -9,6 +9,7 @@ IOTA Train at Home 本地守护与状态上报工具（macOS）。
 - **守护矿机**:每 30 秒检查官方应用与矿工进程、本地控制服务(`127.0.0.1:8010`)、官方日志;连续三次本地异常才自动重启,带五分钟启动宽限、十五分钟重启退避、每小时最多三次;正常排队与正常退出绝不重启
 - **优化启动**:先启动仅监听 `127.0.0.1:18010` 的本地中继(等待真实矿工最多 180 秒,不伪造健康响应),再以中继地址拉起官方应用
 - **状态上报**(默认关闭):经你显式授权后,每 30 秒向 [iota-dashboard](https://github.com/) 仪表盘发送脱敏状态
+- **NOID 负载调度**(默认关闭):显式启用后,排队/等待时自动运行 NOID 默认负载;IOTA 有实际训练活动时保持矿池连接并将 CPU/GPU 占空比降至 10%;监控失败或状态未知时恢复默认负载
 
 ## 安装
 
@@ -30,7 +31,14 @@ iota-agent start
 # 3. 查看最近守护结果
 iota-agent status
 
-# 4. 启用状态上报:先在仪表盘页面点「生成配对令牌」
+# 4. 可选:安装自编译定制版 NOID Miner 后启用 IOTA 优先调度
+iota-agent noid enable
+# 可选指定应用包路径
+iota-agent noid enable --app "/Applications/NOID Miner.app"
+iota-agent noid status
+iota-agent noid disable  # 恢复默认负载,不停止矿工
+
+# 5. 启用状态上报:先在仪表盘页面点「生成配对令牌」
 iota-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
 
 # 停用上报 / 卸载守护
@@ -57,6 +65,9 @@ iota-agent uninstall
 | waiting | 控制连接正常,等待任务 | 否 |
 | abnormal | 主程序/矿工退出、控制服务不可访问、30 分钟无活动 | 连续 3 次后重启 |
 
-## License
+## NOID 调度
+
+先按 `packages/noid-mac-miner/README.md` 构建并安装定制版到 `/Applications/NOID Miner.app`。退出正在运行的旧版后再做切换；守护发现有 NOID 进程但没有控制 socket 时会拒绝启动第二个实例，不会停止旧矿工。启用后,agent 在 IOTA 非训练态自动启动 NOID；训练态将 CPU/GPU 占空比设为 10%，保持现有矿池会话；监控失败或状态未知时恢复默认负载。调度只使用本机 Unix socket (`~/Library/Application Support/NOID Miner/control.sock`)，不会经状态上报传出 NOID 运行信息或钱包地址。禁用调度只恢复默认负载，不停止矿工。
+
 
 MIT

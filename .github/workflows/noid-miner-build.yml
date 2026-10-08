@@ -1,0 +1,40 @@
+name: Build NOID Miner for Apple Silicon
+
+on:
+  push:
+    paths:
+      - 'packages/noid-mac-miner/**'
+      - '.github/workflows/noid-miner-build.yml'
+  pull_request:
+    paths:
+      - 'packages/noid-mac-miner/**'
+      - '.github/workflows/noid-miner-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Run offline policy tests
+        working-directory: packages/noid-mac-miner
+        run: |
+          mkdir -p bin
+          xcrun swiftc -O TestPolicy.swift Engine.swift -o bin/test-policy -framework Network -framework Foundation
+          bin/test-policy
+      - name: Build app and checksums
+        run: bash packages/noid-mac-miner/build-app.command
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOID-Miner-AppleSilicon-${{ github.sha }}
+          path: |
+            packages/noid-mac-miner/dist/NOID-Miner-AppleSilicon.zip
+            packages/noid-mac-miner/dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
