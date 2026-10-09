@@ -1,7 +1,7 @@
 {
   "name": "iota-dashboard",
   "version": "1.0.0",
-  "description": "Online dashboard for IOTA Train at Home miner status, deployed on Cloudflare Pages",
+  "description": "mac-miner online dashboard and self-hosted API for IOTA and NOID mining",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -11,18 +11,22 @@
   ],
   "scripts": {
     "build": "vite build --config web/vite.config.ts",
+    "build:server": "tsc -p tsconfig.server.json",
     "dev": "vite --config web/vite.config.ts",
-    "typecheck": "tsc -p tsconfig.web.json --noEmit && npm run build --workspace=iota-miner-tools && npm run build --workspace=iota-agent",
-    "test": "npm run build --workspace=iota-miner-tools && node --test packages/iota-miner-tools/test/*.test.mjs && npm run test:local-tools && npm test --workspace=iota-agent",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && npm run build --workspace=iota-miner-tools && npm run build --workspace=iota-agent && npm run build:server",
+    "test:server": "npm run build:server && node --test server/test/*.test.mjs",
     "test:local-tools": "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' && python3 -m unittest discover -s tools/tests -v || echo '跳过本地工具测试（需要 macOS 与 Python 3.9+）'",
+    "test": "npm run build --workspace=iota-miner-tools && node --test packages/iota-miner-tools/test/*.test.mjs && npm run test:local-tools && npm test --workspace=iota-agent && npm run test:server",
     "deploy": "npm run build && wrangler pages deploy dist/web"
   },
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260426.1",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.0.0",

@@ -40,14 +40,22 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const parsed = localReportInput.safeParse(value)
   if (!parsed.success) return json('invalid_payload', '上报字段校验失败', 400)
 
-  const record = await env.CACHE.get(`token:${await sha256Hex(match[1] ?? '')}`, 'json') as { hotkey?: unknown } | null
+  const record = await env.CACHE.get(`token:${await sha256Hex(match[1] ?? '')}`, 'json') as { hotkey?: unknown; noidAddress?: unknown } | null
   if (!record || typeof record.hotkey !== 'string') return json('unauthorized', '令牌无效或已过期', 401)
 
+  const reportedAtServer = Math.floor(Date.now() / 1000)
+  const { noid, ...iotaReport } = parsed.data
   await env.CACHE.put(`local-report:${record.hotkey}`, JSON.stringify({
-    ...parsed.data,
+    ...iotaReport,
     hotkey: record.hotkey,
-    reportedAtServer: Math.floor(Date.now() / 1000),
+    reportedAtServer,
   }), { expirationTtl: REPORT_TTL_SEC })
+  if (typeof record.noidAddress === 'string') {
+    await env.CACHE.put(`local-report-noid:${record.noidAddress}`, JSON.stringify({
+      noid: noid ?? null,
+      reportedAtServer,
+    }), { expirationTtl: REPORT_TTL_SEC })
+  }
   return new Response(JSON.stringify({ ok: true }), {
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   })

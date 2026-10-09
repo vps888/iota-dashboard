@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "dist/server",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "@cloudflare/workers-types"],
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmitOnError": true
+  },
+  "include": [
+    "server/**/*.ts",
+    "functions/api/**/*.ts",
+    "packages/iota-miner-tools/src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

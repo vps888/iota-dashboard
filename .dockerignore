@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.wrangler
+.claude
+.vite
+**/dist
+**/coverage
+**/.DS_Store
+packages/noid-mac-miner/source
+packages/noid-mac-miner/bin
+packages/noid-mac-miner/tables.bin
+packages/noid-mac-miner/rounds*.bin

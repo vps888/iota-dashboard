@@ -229,7 +229,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   return json(await withLocalReport(payload, hotkey, env), false)
 }
 
-interface LocalReportRecord extends LocalReportInput {
+interface LocalReportRecord extends Omit<LocalReportInput, 'noid'> {
   hotkey: string
   reportedAtServer: number
 }
@@ -252,7 +252,6 @@ async function withLocalReport(payload: unknown, hotkey: string, env: Env): Prom
       reportedAt: record.reportedAt,
       reportedAtServer: record.reportedAtServer,
       stale: Math.floor(Date.now() / 1000) - record.reportedAtServer > 150,
-      noid: record.noid ?? null,
     },
   }
 }

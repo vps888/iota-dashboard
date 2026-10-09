@@ -1,4 +1,5 @@
 import { validateMinerId } from '../../packages/iota-miner-tools/src/ss58.js'
+import { isValidNoidAddress } from '../../packages/iota-miner-tools/src/noid.js'
 
 export interface Env {
   CACHE?: KVNamespace
@@ -22,7 +23,7 @@ async function sha256Hex(value: string): Promise<string> {
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (!env.CACHE) return json('kv_unavailable', '存储未配置,无法生成令牌', 503)
-  let body: { miner?: unknown }
+  let body: { miner?: unknown; noidAddress?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -31,6 +32,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const miner = typeof body.miner === 'string' ? body.miner.trim() : ''
   if (!validateMinerId(miner).valid) {
     return json('invalid_miner_id', 'Miner ID 格式无效(应为 SS58 hotkey)', 400)
+  }
+  const noidAddress = body.noidAddress === undefined ? undefined : typeof body.noidAddress === 'string' ? body.noidAddress.trim() : ''
+  if (noidAddress !== undefined && !isValidNoidAddress(noidAddress)) {
+    return json('invalid_noid_address', 'NOID 收款地址格式无效', 400)
   }
 
   // 尽力而为的软限流:60 秒窗口内最多生成 5 个
@@ -43,7 +48,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   const hash = await sha256Hex(token)
-  await env.CACHE.put(`token:${hash}`, JSON.stringify({ hotkey: miner, createdAt: Date.now() }), { expirationTtl: TOKEN_TTL_SEC })
+  await env.CACHE.put(`token:${hash}`, JSON.stringify({ hotkey: miner, ...(noidAddress ? { noidAddress } : {}), createdAt: Date.now() }), { expirationTtl: TOKEN_TTL_SEC })
   return new Response(JSON.stringify({ token, createdAt: Date.now() }), {
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   })

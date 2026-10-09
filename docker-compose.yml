@@ -1,0 +1,51 @@
+services:
+  mac-miner:
+    build: .
+    image: mac-miner:local
+    init: true
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      MAC_MINER_DB_PATH: /data/mac-miner.sqlite
+      MAC_MINER_WEB_ROOT: /app/dist/web
+    volumes:
+      - mac-miner-data:/data
+    ports:
+      - "127.0.0.1:${MAC_MINER_PORT:-8788}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["public"]
+    restart: unless-stopped
+    depends_on:
+      mac-miner:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  mac-miner-data:
+  caddy-data:
+  caddy-config:

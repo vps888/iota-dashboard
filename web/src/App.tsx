@@ -1,5 +1,9 @@
 import { useMemo, useState, type ReactElement } from 'react'
-import { useDashboard, getSavedMinerId, saveMinerId, clearMinerId, isValidMinerId, createToken } from './api.js'
+import {
+  useDashboard, getSavedMinerId, saveMinerId, clearMinerId, isValidMinerId, createToken,
+  useNoidDashboard, getSavedNoidAddress, saveNoidAddress, clearNoidAddress, isValidNoidAddressValue,
+} from './api.js'
+import { formatNoidAtomicUnits, type NoidPayment, type NoidWorkerSnapshot } from '../../packages/iota-miner-tools/src/noid.js'
 import { toTrainingRows } from './types.js'
 import { fmtNum, fmtIota, fmtUsd, fmtTime, fmtDate, fmtPct, fmtAgo, fmtContributionTime } from './format.js'
 import type { OfficialStatus } from '../../packages/iota-miner-tools/src/types.js'
@@ -46,11 +50,52 @@ function fmtUptime(sec: number): string {
 }
 
 export default function App(): ReactElement {
+  const [project, setProject] = useState<'iota' | 'noid'>('iota')
   const [minerId, setMinerId] = useState<string | null>(() => getSavedMinerId())
+  const [noidAddress, setNoidAddress] = useState<string | null>(() => getSavedNoidAddress())
 
-  if (!minerId) return <SetupScreen onSubmit={(id) => { saveMinerId(id); setMinerId(id) }} />
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <Brand />
+        <ProjectNavigation project={project} onSelect={setProject} />
+      </header>
+      <main className="page-content">
+        {project === 'iota' ? (
+          minerId ? (
+            <Dashboard minerId={minerId} noidAddress={noidAddress} onReset={() => { clearMinerId(); setMinerId(null) }} />
+          ) : (
+            <SetupScreen onSubmit={(id) => { saveMinerId(id); setMinerId(id) }} />
+          )
+        ) : (
+          noidAddress ? (
+            <NoidPage address={noidAddress} onReset={() => { clearNoidAddress(); setNoidAddress(null) }} onGoIota={() => setProject('iota')} />
+          ) : (
+            <NoidSetupScreen onSubmit={(address) => { saveNoidAddress(address); setNoidAddress(address) }} />
+          )
+        )}
+      </main>
+      <footer className="app-footer">
+        <span>mac-miner · IOTA 数据来自 Macrocosmos · NOID 数据来自 InnovLab</span>
+        <span>本地调度快照需用户授权</span>
+      </footer>
+    </div>
+  )
+}
 
-  return <Dashboard minerId={minerId} onReset={() => { clearMinerId(); setMinerId(null) }} />
+function ProjectNavigation({ project, onSelect }: { project: 'iota' | 'noid'; onSelect: (project: 'iota' | 'noid') => void }): ReactElement {
+  return (
+    <nav className="project-nav" role="tablist" aria-label="挖矿项目">
+      <button type="button" role="tab" aria-selected={project === 'iota'} className={project === 'iota' ? 'is-selected' : ''} onClick={() => onSelect('iota')}>
+        <span className="project-tab-mark iota-tab-mark" aria-hidden="true">I</span>
+        <span><b>IOTA</b><small>Bittensor SN9</small></span>
+      </button>
+      <button type="button" role="tab" aria-selected={project === 'noid'} className={project === 'noid' ? 'is-selected' : ''} onClick={() => onSelect('noid')}>
+        <span className="project-tab-mark noid-tab-mark" aria-hidden="true">N</span>
+        <span><b>NOID</b><small>Parano1d</small></span>
+      </button>
+    </nav>
+  )
 }
 
 function Brand(): ReactElement {
@@ -68,43 +113,253 @@ function Brand(): ReactElement {
 function SetupScreen({ onSubmit }: { onSubmit: (id: string) => void }): ReactElement {
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
-
   const submit = () => {
     const id = value.trim()
     if (!isValidMinerId(id)) {
-      setError('Miner ID 格式无效:应为 48 位左右的 SS58 字符串(在 IOTA 应用 Miner 页面复制)')
+      setError('Miner ID 格式无效，应为 SS58 hotkey。请从 IOTA 应用的 Miner 页面复制。')
       return
     }
     onSubmit(id)
   }
 
   return (
-    <div className="app-shell">
-      <div className="setup-shell">
-        <div className="setup-shell-inner">
-          <Brand />
-          <div className="setup-panel">
-          <span className="section-index">连接矿机</span>
-          <h2>添加 IOTA Miner ID</h2>
-          <p>粘贴 IOTA Train at Home 的公开 Miner ID。它会保存在当前浏览器，并用于向 mac-miner 在线接口查询公开 IOTA 数据；无需提供钱包密钥。</p>
+    <div className="setup-shell">
+      <div className="setup-shell-inner">
+        <div className="setup-intro">
+          <span className="section-index">IOTA · Bittensor SN9</span>
+          <h2>连接 IOTA miner</h2>
+          <p>输入公开 Miner ID，查看训练、队列和结算数据。IOTA 与 NOID 使用不同身份，各自在对应项目页配置。</p>
+        </div>
+        <div className="setup-panel">
+          <label htmlFor="iota-miner-id">Miner ID（SS58 hotkey）</label>
           <input
+            id="iota-miner-id"
             value={value}
-            onChange={(e) => { setValue(e.target.value); setError(null) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
-            placeholder="粘贴你的 Miner ID(SS58 hotkey)"
+            onChange={(event) => { setValue(event.target.value); setError(null) }}
+            onKeyDown={(event) => { if (event.key === 'Enter') submit() }}
+            placeholder="粘贴 IOTA Miner ID"
             spellCheck={false}
             autoFocus
+            aria-invalid={error !== null}
+            aria-describedby={error ? 'iota-id-error' : undefined}
           />
-          {error && <div className="setup-error">{error}</div>}
-          <button onClick={submit} disabled={!value.trim()}>开始监控</button>
-          </div>
+          {error && <div id="iota-id-error" className="setup-error">{error}</div>}
+          <p className="setup-note">Miner ID 是公开标识，会发送给 mac-miner 在线接口查询 IOTA 数据；不要输入钱包助记词或私钥。</p>
+          <button onClick={submit} disabled={!value.trim()}>打开 IOTA 面板</button>
         </div>
       </div>
     </div>
   )
 }
 
-function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void }): ReactElement {
+function NoidSetupScreen({ onSubmit }: { onSubmit: (address: string) => void }): ReactElement {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const submit = () => {
+    const address = value.trim()
+    if (!isValidNoidAddressValue(address)) {
+      setError('NOID 地址校验失败。请复制以 o1 开头的 Parano1d 主网收款地址。')
+      return
+    }
+    onSubmit(address)
+  }
+
+  return (
+    <div className="setup-shell noid-setup-shell">
+      <div className="setup-shell-inner">
+        <div className="setup-intro">
+          <span className="section-index">NOID · Parano1d</span>
+          <h2>连接 NOID 地址</h2>
+          <p>输入独立的 NOID 主网收款地址，查询 InnovLab 矿池记录。这里不使用 IOTA Miner ID，也不需要私钥或助记词。</p>
+        </div>
+        <div className="setup-panel">
+          <label htmlFor="noid-payout-address">NOID 收款地址</label>
+          <input
+            id="noid-payout-address"
+            value={value}
+            onChange={(event) => { setValue(event.target.value); setError(null) }}
+            onKeyDown={(event) => { if (event.key === 'Enter') submit() }}
+            placeholder="o1…"
+            autoCapitalize="none"
+            autoComplete="off"
+            spellCheck={false}
+            autoFocus
+            aria-invalid={error !== null}
+            aria-describedby={error ? 'noid-address-error' : 'noid-address-note'}
+          />
+          {error && <div id="noid-address-error" className="setup-error">{error}</div>}
+          <p id="noid-address-note" className="setup-note">该公开地址会发送至 mac-miner 在线接口并查询 InnovLab；只输入地址，不要输入钱包密钥。地址按独立身份保存。</p>
+          <button onClick={submit} disabled={!value.trim()}>打开 NOID 面板</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function shortNoidAddress(address: string): string {
+  return `${address.slice(0, 7)}…${address.slice(-7)}`
+}
+
+function noidPaymentStatus(status: string): string {
+  if (status === 'confirmed') return '已确认'
+  if (status === 'sent') return '已发送'
+  if (status === 'prepared') return '待广播'
+  return status
+}
+
+function NoidPage({ address, onReset, onGoIota }: { address: string; onReset: () => void; onGoIota: () => void }): ReactElement {
+  const { data, error, loading, refresh, countdown, fetchedAtMs } = useNoidDashboard(address)
+  const now = Math.floor(Date.now() / 1000)
+  const scheduler = data?.localScheduler ?? null
+  const local = scheduler?.snapshot ?? null
+  const statusLabel = scheduler?.stale ? '本地上报已过期' : local ? NOID_STATUS[local.mode].label : scheduler ? '本机 Agent 未运行 NOID' : '尚未绑定本机 Agent'
+  const statusTone = scheduler?.stale ? 'warning' : local ? NOID_STATUS[local.mode].tone : 'neutral'
+
+  return (
+    <div className="project-page noid-page">
+      <div className="project-toolbar">
+        <span className={`connection ${error || data?.stale ? 'is-warning' : 'is-connected'}`}>
+          <i />
+          {loading ? '查询中…' : error ? '查询失败 · 保留最近数据' : data?.stale ? '矿池数据为缓存' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
+        </span>
+        <div className="header-actions">
+          <button className="refresh-btn" onClick={refresh} disabled={loading}>刷新 NOID</button>
+          <button className="refresh-btn" onClick={onReset}>更换收款地址</button>
+        </div>
+      </div>
+      <div className="project-content">
+        {error && <div className="error-box"><span>矿池查询失败</span><strong>{error}</strong></div>}
+        {!data && loading && <div className="empty-state">正在读取 InnovLab 矿池…</div>}
+        {data && (
+          <>
+            {data.warning && <div className="status-warning">{data.warning}</div>}
+            <section className="noid-overview">
+              <div className="noid-overview-head">
+                <div className="noid-address-title">
+                  <span className="noid-glyph" aria-hidden="true">N</span>
+                  <div>
+                    <span className="section-index">Parano1d · InnovLab</span>
+                    <h2>NOID 矿池概览</h2>
+                    <code className="noid-address-id" title={address}>{shortNoidAddress(address)}</code>
+                  </div>
+                </div>
+                <div className={`mode-flag ${data.found ? 'positive' : 'warning'}`}>
+                  {data.found ? `${fmtNum(data.workersOnline)} 个在线 Worker` : '矿池暂未记录该地址'}
+                </div>
+              </div>
+              {!data.found && <p className="noid-not-found">地址暂未出现在矿池统计中；确认矿工已连接正确的 NOID 主网矿池后再刷新。</p>}
+              <div className="noid-pool-stats">
+                <div className="pool-rate-primary">
+                  <span>矿池记录算力</span>
+                  <strong>{fmtHashrate(data.hashrateHps)}</strong>
+                  <small>统计口径：矿池接受工作量</small>
+                </div>
+                <div className="pool-stat">
+                  <span>接受份额 · 10 分钟</span>
+                  <strong>{fmtNum(data.shares.accepted10m)}</strong>
+                </div>
+                <div className="pool-stat">
+                  <span>接受份额 · 1 小时</span>
+                  <strong>{fmtNum(data.shares.accepted1h)}</strong>
+                </div>
+                <div className="pool-stat">
+                  <span>接受份额 · 24 小时</span>
+                  <strong>{fmtNum(data.shares.accepted24h)}</strong>
+                </div>
+              </div>
+              <div className="noid-balance-grid">
+                <div><span>待结算</span><strong>{formatNoidAtomicUnits(data.balanceAtomic.pending)} NOID</strong></div>
+                <div><span>已确认</span><strong>{formatNoidAtomicUnits(data.balanceAtomic.confirmed)} NOID</strong></div>
+                <div><span>累计支付</span><strong>{formatNoidAtomicUnits(data.balanceAtomic.paid)} NOID</strong></div>
+                <div><span>最低支付门槛</span><strong>{formatNoidAtomicUnits(data.payoutAtomic.minimum)} NOID</strong></div>
+              </div>
+            </section>
+
+            <div className="noid-detail-grid">
+              <section className="panel noid-workers-panel">
+                <div className="panel-heading">
+                  <div><span>本机矿工</span><h2>Worker 状态</h2></div>
+                  <span>{data.workers.length} 个 Worker</span>
+                </div>
+                {data.workers.length === 0 ? (
+                  <p className="empty-state">暂无 Worker 记录</p>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>Worker</th><th>状态</th><th>算力</th><th>接受</th><th>拒绝 / 过期</th></tr></thead>
+                      <tbody>{data.workers.map((worker, index) => (
+                        <tr key={index}>
+                          <td>Worker {index + 1}</td>
+                          <td>{worker.online === true ? '在线' : worker.online === false ? '离线' : '—'}</td>
+                          <td>{fmtHashrate(worker.hashrateHps)}</td>
+                          <td>{fmtNum(worker.accepted)}</td>
+                          <td>{fmtNum(worker.rejected)} / {fmtNum(worker.stale)}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+
+              <section className="panel noid-scheduler-panel">
+                <div className="panel-heading">
+                  <div><span>mac-miner 本机调度</span><h2>负载状态</h2></div>
+                  <span className={`mode-flag ${statusTone}`}>{statusLabel}</span>
+                </div>
+                {local ? (
+                  <div className={`local-noid-snapshot ${scheduler?.stale ? 'is-stale' : ''}`}>
+                    <div className="local-duty-grid">
+                      <div><span>CPU 目标占空比</span><strong>{local.cpuDuty === null ? '—' : `${local.cpuDuty}%`}</strong><small>{fmtHashrate(local.cpuRate)}</small></div>
+                      <div><span>GPU 目标占空比</span><strong>{local.gpuDuty === null ? '—' : `${local.gpuDuty}%`}</strong><small>{fmtHashrate(local.gpuRate)}</small></div>
+                    </div>
+                    <div className="share-strip">
+                      <span>本次接受 <b>{fmtNum(local.accepted)}</b></span>
+                      <span>拒绝 <b>{fmtNum(local.rejected)}</b></span>
+                      <span>过期 <b>{fmtNum(local.stale)}</b></span>
+                    </div>
+                    <p className="telemetry-note">最近上报 {fmtAgo(scheduler?.reportedAtServer ?? null, now)}。占空比是计算目标，不代表功耗。</p>
+                  </div>
+                ) : (
+                  <div className="agent-empty">
+                    <span className="empty-mark">⌁</span>
+                    <p>{scheduler ? 'Agent 已绑定，但没有可显示的 NOID 调度快照。' : '本机调度尚未绑定到此地址。请在 IOTA 项目页启用上报并将该 NOID 地址加入配对。'}</p>
+                    {!scheduler && <button className="link-btn" onClick={onGoIota}>去 IOTA 项目页配对本机 Agent</button>}
+                  </div>
+                )}
+              </section>
+            </div>
+
+            <section className="panel noid-payments-panel">
+              <div className="panel-heading">
+                <div><span>链上转账 · 矿池记录</span><h2>支付记录</h2></div>
+                <span>未将预估产出计入收益</span>
+              </div>
+              {data.payments.length === 0 ? (
+                <p className="empty-state">暂无矿池支付记录</p>
+              ) : (
+                <div className="table-wrap payments-wrap">
+                  <table>
+                    <thead><tr><th>时间</th><th>金额</th><th>状态</th><th>交易 ID</th></tr></thead>
+                    <tbody>{data.payments.map((payment, index) => (
+                      <tr key={`${payment.txid ?? 'pending'}-${payment.createdAt ?? index}`}>
+                        <td>{fmtTime(payment.createdAt)}</td>
+                        <td className="positive">{formatNoidAtomicUnits(payment.amountAtomic)} NOID</td>
+                        <td>{noidPaymentStatus(payment.status)}</td>
+                        <td><code className="txid" title={payment.txid ?? ''}>{payment.txid ? `${payment.txid.slice(0, 10)}…${payment.txid.slice(-8)}` : '待生成'}</code></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAddress: string | null; onReset: () => void }): ReactElement {
   const { data, error, loading, refresh, countdown, fetchedAtMs } = useDashboard(minerId)
   const [tokenOpen, setTokenOpen] = useState(false)
   const now = Math.floor(Date.now() / 1000)
@@ -113,33 +368,27 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
   const trainingRows = useMemo(() => (data?.miner ? toTrainingRows(data.miner.epochRecords) : []), [data])
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <Brand />
-        <div className="header-actions">
-          <span className={`connection ${error || data?.lookup.stale ? 'is-warning' : 'is-connected'}`}>
-            <i />
-            {loading ? '加载中…' : error ? '刷新失败 · 保留上次数据' : data?.lookup.stale ? '官方数据陈旧' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
-          </span>
-          <button className="refresh-btn" onClick={refresh} disabled={loading}>
-            立即刷新
-          </button>
-          <button className="refresh-btn" onClick={onReset}>更换 Miner ID</button>
-        </div>
-      </header>
-
-      <main className="page-content">
+    <>
+      <div className="project-toolbar">
+        <span className={`connection ${error || data?.lookup.stale ? 'is-warning' : 'is-connected'}`}>
+          <i />
+          {loading ? '加载中…' : error ? '刷新失败 · 保留上次数据' : data?.lookup.stale ? '官方数据陈旧' : `更新 ${fetchedAtMs ? fmtTime(Math.floor(fetchedAtMs / 1000)) : '—'} · ${countdown}s 后刷新`}
+        </span>
+        <button className="refresh-btn" onClick={refresh} disabled={loading}>刷新 IOTA</button>
+        <button className="refresh-btn" onClick={onReset}>更换 Miner ID</button>
+      </div>
+      <div className="project-content">
         {error && (
           <div className="error-box">
             <span>数据获取失败</span>
             <strong>{error}</strong>
           </div>
         )}
-        {!data && loading && <div className="empty-state">正在读取矿机数据…</div>}
+        {!data && loading && <div className="empty-state">正在读取 IOTA 数据…</div>}
         {data && (() => {
           const onlineOfficial = !data.lookup.stale && (data.lookup.status === 'contributing' || data.lookup.status === 'waiting')
           const onlineLocal = data.localReport !== null && !data.localReport.stale
-            && (['training', 'waiting', 'queued', 'starting'].includes(data.localReport.status) || data.localReport.noid?.running === true)
+            && ['training', 'waiting', 'queued', 'starting'].includes(data.localReport.status)
           const minerOnline = onlineOfficial || onlineLocal
           const minerPanel = (
             <section className="status-lane iota-lane">
@@ -267,47 +516,11 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
                       <strong><button className="link-btn" onClick={() => setTokenOpen(true)}>管理上报</button></strong>
                     </div>
                   </div>
-                  {data.localReport.noid ? (
-                    <div className={`noid-module ${data.localReport.stale ? 'is-stale' : ''}`}>
-                      <div className="noid-module-head">
-                        <div className="noid-module-name">
-                          <span className="noid-glyph" aria-hidden="true">N</span>
-                          <div><span className="module-kicker">Parano1d · NOID</span><h4>挖矿状态</h4></div>
-                        </div>
-                        <span className={`mode-flag ${NOID_STATUS[data.localReport.noid.mode].tone}`}>
-                          {NOID_STATUS[data.localReport.noid.mode].label}
-                        </span>
-                      </div>
-                      <div className="noid-rate-grid">
-                        <div className="noid-rate">
-                          <span>CPU 算力</span>
-                          <strong>{fmtHashrate(data.localReport.noid.cpuRate)}</strong>
-                          <small>占空比目标 <b>{data.localReport.noid.cpuDuty === null ? '—' : `${data.localReport.noid.cpuDuty}%`}</b></small>
-                        </div>
-                        <div className="noid-rate">
-                          <span>GPU 算力</span>
-                          <strong>{fmtHashrate(data.localReport.noid.gpuRate)}</strong>
-                          <small>占空比目标 <b>{data.localReport.noid.gpuDuty === null ? '—' : `${data.localReport.noid.gpuDuty}%`}</b></small>
-                        </div>
-                      </div>
-                      <div className="share-strip">
-                        <span>本次接受 <b>{fmtNum(data.localReport.noid.accepted)}</b></span>
-                        <span>拒绝 <b>{fmtNum(data.localReport.noid.rejected)}</b></span>
-                        <span>过期 <b>{fmtNum(data.localReport.noid.stale)}</b></span>
-                      </div>
-                      <p className="telemetry-note">占空比是计算目标，不代表功耗或整机耗电。</p>
-                    </div>
-                  ) : (
-                    <div className="noid-empty">
-                      <span>NOID 状态尚未上报</span>
-                      <p>启用 mac-miner 调度并授权本地状态上报后，这里会显示算力与接受份额；不会采集钱包或能耗数据。</p>
-                    </div>
-                  )}
                 </>
               ) : (
                 <div className="agent-empty">
                   <span className="empty-mark">⌁</span>
-                  <p>连接本机 Agent 后，查看 IOTA 队列与 NOID 负载。上报默认关闭，只发送你授权的状态数据。</p>
+                  <p>连接本机 Agent 后，查看 IOTA 队列与守护状态。上报默认关闭，只发送你授权的数据。</p>
                 </div>
               )}
             </section>
@@ -318,7 +531,7 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
               <section className={`machine-overview ${minerOnline ? 'is-active' : 'is-idle'}`}>
                 <div className="machine-overview-head">
                   <div>
-                    <span className="section-index">机况 · IOTA / NOID</span>
+                    <span className="section-index">IOTA · Bittensor SN9</span>
                     <h2>运行概览</h2>
                   </div>
                   <div className="miner-id-readout">
@@ -463,18 +676,12 @@ function Dashboard({ minerId, onReset }: { minerId: string; onReset: () => void 
             </>
           )
         })()}
-      </main>
-
-      <footer className="app-footer">
-        <span>mac-miner · IOTA 数据来自 Macrocosmos · 本地状态由你授权上报</span>
-      </footer>
-
-      {tokenOpen && <TokenDialog minerId={minerId} onClose={() => setTokenOpen(false)} />}
-    </div>
+      </div>
+      {tokenOpen && <TokenDialog minerId={minerId} noidAddress={noidAddress} onClose={() => setTokenOpen(false)} />}
+    </>
   )
 }
-
-function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => void }): ReactElement {
+function TokenDialog({ minerId, noidAddress, onClose }: { minerId: string; noidAddress: string | null; onClose: () => void }): ReactElement {
   const [token, setToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -484,7 +691,7 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
     setBusy(true)
     setError(null)
     try {
-      const result = await createToken(minerId)
+      const result = await createToken(minerId, noidAddress ?? undefined)
       setToken(result.token)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -494,10 +701,10 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
   }
 
   const steps = token ? [
-    { title: '安装本地管理程序', command: 'npm install -g iota-agent', note: '当前 CLI 名称仍是 iota-agent；NOID 联动需要包含此功能的 mac-miner 版本。' },
+    { title: '安装本地管理程序', command: 'npm install -g iota-agent', note: '当前 CLI 名称仍是 iota-agent；NOID 调度需要包含此功能的 mac-miner 版本。' },
     { title: '启用登录后守护', command: 'iota-agent install', note: '每 30 秒读取 IOTA 状态；不会改动钱包。' },
-    { title: '配对并启用在线上报', command: `iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`, note: '只上报你授权的状态快照；不包含钱包或 NOID 收益、电耗。' },
-    { title: '启用 IOTA → NOID 调度（可选）', command: 'iota-agent noid enable', note: '需先安装 mac-miner 定制版 NOID Miner.app，并退出旧版矿工。' },
+    { title: '配对并启用在线上报', command: `iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`, note: noidAddress ? `此令牌同时绑定 NOID 地址 ${noidAddress.slice(0, 7)}…${noidAddress.slice(-6)}；NOID 本地调度状态会单独显示在 NOID 页面。` : '尚未设置 NOID 地址；以后补充地址后需重新配对，才能关联 NOID 本地调度状态。' },
+    { title: '启用 NOID 调度（可选）', command: 'iota-agent noid enable', note: '需先安装 mac-miner 定制版 NOID Miner.app，并退出旧版矿工。' },
   ] : []
 
   const copy = async (index: number, text: string) => {
@@ -519,8 +726,8 @@ function TokenDialog({ minerId, onClose }: { minerId: string; onClose: () => voi
         </div>
         {!token ? (
           <div className="modal-body">
-            <p>mac-miner Agent 运行在矿机本机，观察 IOTA 状态并按策略调度 NOID。在线上报需要单独授权；没有 Agent 快照时，页面仍只显示官方 IOTA 数据。</p>
-            <p className="modal-note">上报字段包含队列、控制状态、调度模式、CPU/GPU 占空比目标、算力与份额计数；不含钱包、私钥、主机名、文件路径、日志、能耗或收益。上报状态会显示在该公开 Miner ID 的监控页，知道此 ID 的人都可能查看。令牌仅用于本机上报，绑定当前 Miner ID，只显示一次，90 天过期。</p>
+            <p>mac-miner Agent 运行在矿机本机，观察 IOTA 状态并按策略调度 NOID。在线上报需要单独授权；两个项目使用独立页面和身份。</p>
+            <p className="modal-note">上报字段包含 IOTA 队列/控制状态；绑定 NOID 地址时，另上报 NOID 调度模式、CPU/GPU 目标占空比、算力与份额计数。不含私钥、助记词、能耗或收益。绑定后，这两个公开标识会关联；知道对应 Miner ID 或 NOID 地址的人可能看到该身份对应的本地状态。令牌仅用于本机上报，只显示一次，90 天过期。</p>
             {error && <div className="setup-error">{error}</div>}
             <button onClick={generate} disabled={busy}>{busy ? '生成中…' : '生成配对令牌'}</button>
           </div>

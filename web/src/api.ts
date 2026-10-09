@@ -1,4 +1,6 @@
 import { validateMinerId as validateMinerIdChecksum } from '../../packages/iota-miner-tools/src/ss58.js'
+import { isValidNoidAddress } from '../../packages/iota-miner-tools/src/noid.js'
+import type { NoidPayment, NoidPoolSnapshot, NoidWorkerSnapshot } from '../../packages/iota-miner-tools/src/noid.js'
 import type { OfficialStatus } from '../../packages/iota-miner-tools/src/types.js'
 export interface MinerStatus {
   hotkey: string
@@ -69,7 +71,19 @@ export interface LocalReport {
   reportedAt: number
   reportedAtServer: number
   stale: boolean
-  noid: LocalNoidReport | null
+}
+
+export interface NoidDashboardData extends NoidPoolSnapshot {
+  address: string
+  payments: NoidPayment[]
+  fetchedAt: number
+  stale: boolean
+  warning: string | null
+  localScheduler: {
+    snapshot: LocalNoidReport | null
+    reportedAtServer: number
+    stale: boolean
+  } | null
 }
 
 export interface DashboardData {
@@ -100,6 +114,7 @@ export interface DashboardData {
 }
 
 const STORAGE_KEY = 'iota-dashboard:miner-id'
+const NOID_STORAGE_KEY = 'mac-miner:noid-address'
 const REFRESH_MS = 60_000
 
 export function getSavedMinerId(): string | null {
@@ -119,6 +134,23 @@ export function isValidMinerId(id: string): boolean {
   return validateMinerIdChecksum(id.trim()).valid
 }
 
+export function getSavedNoidAddress(): string | null {
+  const value = localStorage.getItem(NOID_STORAGE_KEY)
+  return value && isValidNoidAddress(value) ? value : null
+}
+
+export function saveNoidAddress(address: string): void {
+  localStorage.setItem(NOID_STORAGE_KEY, address.trim())
+}
+
+export function clearNoidAddress(): void {
+  localStorage.removeItem(NOID_STORAGE_KEY)
+}
+
+export function isValidNoidAddressValue(address: string): boolean {
+  return isValidNoidAddress(address.trim())
+}
+
 export async function fetchDashboard(minerId: string): Promise<DashboardData> {
   const res = await fetch(`/api/dashboard?miner=${encodeURIComponent(minerId.trim())}`)
   if (!res.ok) {
@@ -128,11 +160,20 @@ export async function fetchDashboard(minerId: string): Promise<DashboardData> {
   return res.json()
 }
 
-export async function createToken(minerId: string): Promise<{ token: string; createdAt: number }> {
+export async function fetchNoidDashboard(address: string): Promise<NoidDashboardData> {
+  const res = await fetch(`/api/noid?address=${encodeURIComponent(address.trim())}`)
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { message?: string } | null
+    throw new Error(body?.message ?? `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function createToken(minerId: string, noidAddress?: string): Promise<{ token: string; createdAt: number }> {
   const res = await fetch('/api/token', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ miner: minerId.trim() }),
+    body: JSON.stringify({ miner: minerId.trim(), ...(noidAddress ? { noidAddress: noidAddress.trim() } : {}) }),
   })
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { message?: string } | null
@@ -185,37 +226,83 @@ export function useDashboard(minerId: string | null): {
     let cancelled = false
     setLoading(true)
     fetchDashboard(minerId)
-      .then((d) => {
+      .then((value) => {
         if (cancelled) return
-        setData(d)
+        setData(value)
         setError(null)
         setFetchedAtMs(Date.now())
       })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [tick, minerId])
 
   useEffect(() => {
     if (!minerId) return
-    const id = setInterval(() => setTick((t) => t + 1), REFRESH_MS)
+    const id = setInterval(() => setTick((value) => value + 1), REFRESH_MS)
     return () => clearInterval(id)
   }, [minerId])
-
-  const countdown = useCountdown(fetchedAtMs)
 
   return {
     data,
     error,
     loading,
     fetchedAtMs,
-    refresh: () => setTick((t) => t + 1),
-    countdown,
+    refresh: () => setTick((value) => value + 1),
+    countdown: useCountdown(fetchedAtMs),
+  }
+}
+
+export function useNoidDashboard(address: string | null): {
+  data: NoidDashboardData | null
+  error: string | null
+  loading: boolean
+  fetchedAtMs: number | null
+  refresh: () => void
+  countdown: number
+} {
+  const [data, setData] = useState<NoidDashboardData | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [fetchedAtMs, setFetchedAtMs] = useState<number | null>(null)
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    if (!address) return
+    let cancelled = false
+    setLoading(true)
+    fetchNoidDashboard(address)
+      .then((response) => {
+        if (cancelled) return
+        setData(response)
+        setError(null)
+        setFetchedAtMs(Date.now())
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [address, tick])
+
+  useEffect(() => {
+    if (!address) return
+    const id = setInterval(() => setTick((value) => value + 1), REFRESH_MS)
+    return () => clearInterval(id)
+  }, [address])
+
+  return {
+    data,
+    error,
+    loading,
+    fetchedAtMs,
+    refresh: () => setTick((value) => value + 1),
+    countdown: useCountdown(fetchedAtMs),
   }
 }

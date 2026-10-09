@@ -27,7 +27,7 @@ npm run dev          # Vite 开发服务器(代理 /api 到 8788)
 
 首次打开页面时输入 Miner ID(SS58 hotkey,可在 IOTA 应用 Miner 页面复制),保存于浏览器 localStorage;之后访问不再提示,可通过右上角「更换 Miner ID」重新输入。
 
-## 部署
+## Cloudflare Pages（备用部署）
 
 ```bash
 npm run deploy
@@ -40,6 +40,28 @@ npm run deploy
 ```bash
 npx wrangler kv namespace create CACHE
 ```
+
+## Ubuntu Docker 自托管
+
+Docker 镜像包含在线页面、Pages API 路由的 Node 运行时和 SQLite 持久 KV。Cloudflare Pages 部署可保留作回滚；Docker 数据库不自动导入旧 Cloudflare KV，切换后需要在新站点重新生成配对令牌并更新本机 Agent。
+
+本机先构建并启动 HTTP 服务（默认只绑定 `127.0.0.1:8788`）：
+
+```bash
+docker compose build
+docker compose up -d
+curl http://127.0.0.1:8788/healthz
+```
+
+SQLite 文件持久保存在 `mac-miner-data` named volume；不得删除该 volume 来清理容器。公网部署需把 `miner.zhetengxia.com` DNS 指向服务器，并确认 80/443 端口空闲或准备接入现有反向代理。端口空闲且 DNS 生效后，可启用随仓库提供的 Caddy profile 获取 HTTPS：
+
+```bash
+docker compose --profile public up -d
+```
+
+该 profile 会绑定主机 80/443；服务器上有现有服务监听时不要启动它，先配置现有代理转发到 `127.0.0.1:8788`。容器以非 root 用户运行，数据库路径/凭据不烘焙进镜像；`.env.local` 被 `.dockerignore` 排除。
+
+备份前暂停容器，再把 named volume 内容复制到安全位置；恢复前应暂停服务并保留原数据库副本。Cloudflare KV 中的 token/report 不会自动迁移，旧站点在完成验证前保持在线。
 
 ## iota-agent 本地守护与上报（macOS）
 
