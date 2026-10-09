@@ -39,15 +39,15 @@
 
 点击「停止挖矿」、关闭最后一个窗口或退出程序均停止挖矿。普通打开不会自动开挖，不随开机启动。临时网络错误自动重连；非过期份额拒绝等校验错误仍停止。两个后端相互独立，一个停止不会伪装成两者均正常。
 
-软件不收集私钥、不含远程管理功能或遥测。`iota-agent` 联动定制版另提供仅当前用户可访问的本地 Unix socket 控制，不监听网络、不返回钱包地址；钱包公开地址仅保存在本机 UserDefaults，并发送给矿池用于收益归属。矿池能看到连接 IP、钱包和生成的 worker 名。分享截图或日志前请自己遮盖钱包。
+软件不收集私钥、不含远程管理功能或遥测。`miner-agent` 联动定制版另提供仅当前用户可访问的本地 Unix socket 控制，不监听网络、不返回钱包地址；钱包公开地址仅保存在本机 UserDefaults，并发送给矿池用于收益归属。矿池能看到连接 IP、钱包和生成的 worker 名。分享截图或日志前请自己遮盖钱包。
 
-## iota-agent 联动定制版
+## miner-agent 联动定制版
 
-本仓库固定基于 `cryptoresetlife/noid-mac-miner` v0.4.0（提交 `c7d5d43e790a008ca0b30befdbcf3d913df9e7ea`），保留 Apache-2.0 许可与 NOTICE。定制版增加 CPU 计算占空比和本机 Unix socket 控制：`iota-agent` 可在不重连矿池的情况下调整 CPU/GPU 目标占空比，并查询运行状态；接口不提供钱包字段、不监听网络端口。socket 位于 `~/Library/Application Support/NOID Miner/control.sock`，目录与 socket 仅当前用户可访问。
+本仓库固定基于 `cryptoresetlife/noid-mac-miner` v0.4.0（提交 `c7d5d43e790a008ca0b30befdbcf3d913df9e7ea`），保留 Apache-2.0 许可与 NOTICE。定制版增加 CPU 计算占空比和本机 Unix socket 控制：`miner-agent` 可在不重连矿池的情况下调整 CPU/GPU 目标占空比，并查询运行状态；接口不提供钱包字段、不监听网络端口。socket 位于 `~/Library/Application Support/NOID Miner/control.sock`，目录与 socket 仅当前用户可访问。
 
-联动策略由 `iota-agent` 明确启用后生效：IOTA 正在训练时 CPU/GPU 均降至 10%；排队、等待或状态异常时恢复 NOID 默认负载（CPU 100%、GPU 70%）。控制心跳中断超过 90 秒时，应用也会恢复默认负载。目标占空比不是功耗上限。
+联动策略由 `miner-agent` 明确启用后生效：IOTA 正在训练时 CPU/GPU 均降至 10%；排队、等待或状态异常时恢复 NOID 默认负载（CPU 100%、GPU 70%）。控制心跳中断超过 90 秒时，应用也会恢复默认负载。目标占空比不是功耗上限。
 
-构建产物仍位于 `dist/NOID Miner.app`。将其安装到 `/Applications/NOID Miner.app` 后，运行 `iota-agent noid enable` 才会启用自动启动和调度。切换时必须先手动退出旧版 NOID Miner，避免两个矿工同时运行；构建脚本不会启动矿工。
+构建产物仍位于 `dist/NOID Miner.app`。将其安装到 `/Applications/NOID Miner.app` 后，运行 `miner-agent noid enable` 才会启用自动启动和调度。切换时必须先手动退出旧版 NOID Miner，避免两个矿工同时运行；构建脚本不会启动矿工。
 
 GitHub Actions 使用 `macos-15` Apple Silicon runner 自动构建并上传 zip artifact，保留 14 天；不需要在本机安装 Xcode，也不会自动发布 GitHub Release。artifact 为临时签名，不含 Apple Developer ID 签名或公证。
 

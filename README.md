@@ -2,7 +2,7 @@
 
 mac-miner 是面向 Apple Silicon 的 IOTA/NOID 挖矿调度与监控工具，包含在线仪表盘和本地 Agent。项目仍在早期开发阶段。
 
-IOTA 官方数据来自 Macrocosmos 公开接口；本机 Agent 数据只有在用户生成配对令牌并显式开启上报后才发送。页面每 60 秒自动刷新。
+IOTA 官方数据来自 Macrocosmos 公开接口；本机 miner-agent 数据只有在用户生成配对令牌并显式开启上报后才发送。页面每 60 秒自动刷新。
 
 ## 功能
 
@@ -43,7 +43,7 @@ npx wrangler kv namespace create CACHE
 
 ## Ubuntu Docker 自托管
 
-Docker 镜像包含在线页面、Pages API 路由的 Node 运行时和 SQLite 持久 KV。Cloudflare Pages 部署可保留作回滚；Docker 数据库不自动导入旧 Cloudflare KV，切换后需要在新站点重新生成配对令牌并更新本机 Agent。
+Docker 镜像包含在线页面、Pages API 路由的 Node 运行时和 SQLite 持久 KV。Cloudflare Pages 部署可保留作回滚；Docker 数据库不自动导入旧 Cloudflare KV，切换后需要在新站点重新生成配对令牌并更新本机 miner-agent。
 
 本机先构建并启动 HTTP 服务（默认只绑定 `127.0.0.1:8788`）：
 
@@ -63,7 +63,7 @@ docker compose --profile public up -d
 
 备份前暂停容器，再把 named volume 内容复制到安全位置；恢复前应暂停服务并保留原数据库副本。Cloudflare KV 中的 token/report 不会自动迁移，旧站点在完成验证前保持在线。
 
-## iota-agent 本地守护与上报（macOS）
+## miner-agent 本地守护与上报（macOS）
 
 `packages/iota-local-agent` 是从社区 Python 工具移植的 Node/TypeScript 守护,安装在本机后可:
 
@@ -76,11 +76,11 @@ docker compose --profile public up -d
 ```bash
 npm run build --workspace=iota-local-agent
 # 安装登录后自动运行的守护(LaunchAgent)
-npm exec --workspace=iota-local-agent -- iota-agent install
+npm exec --workspace=iota-local-agent -- miner-agent install
 # 优化启动(替代直接打开官方应用)
-npm exec --workspace=iota-local-agent -- iota-agent start
+npm exec --workspace=iota-local-agent -- miner-agent start
 # 查看最近守护结果
-npm exec --workspace=iota-local-agent -- iota-agent status
+npm exec --workspace=iota-local-agent -- miner-agent status
 ```
 
 ### 启用状态上报
@@ -88,16 +88,16 @@ npm exec --workspace=iota-local-agent -- iota-agent status
 在仪表盘页面点击「生成配对令牌」(绑定当前 Miner ID,只显示一次),然后在矿机上:
 
 ```bash
-iota-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
+miner-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
 ```
 
-上报内容仅限:守护状态、队列位置、控制连接、重启次数、运行时长、系统类型、代理版本；定制 NOID 调度启用时附带当前模式、CPU/GPU 目标占空比、算力和份额计数。**不含**钱包/私钥、主机名、文件路径、PID、日志、收益或电耗。令牌在云端只存 SHA-256 哈希,90 天自动过期;停用上报随时执行 `iota-agent report --disable`。数据文件位于 `~/.iota-agent/`(权限 0600)。
+上报内容仅限:守护状态、队列位置、控制连接、重启次数、运行时长、系统类型、代理版本；定制 NOID 调度启用时附带当前模式、CPU/GPU 目标占空比、算力和份额计数。**不含**钱包/私钥、主机名、文件路径、PID、日志、收益或电耗。令牌在云端只存 SHA-256 哈希,90 天自动过期;停用上报随时执行 `miner-agent report --disable`。数据文件位于 `~/.miner-agent/`(权限 0600)。
 
 ### 卸载
 
 ```bash
-iota-agent uninstall   # 停止并移除 LaunchAgent(矿机保持运行)
-rm -rf ~/.iota-agent   # 可选:清理配置与状态文件
+miner-agent uninstall   # 停止并移除 LaunchAgent(矿机保持运行)
+rm -rf ~/.miner-agent   # 可选:清理配置与状态文件
 ```
 
 ## npm CLI（实验性）

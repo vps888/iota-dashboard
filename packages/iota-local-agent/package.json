@@ -1,5 +1,5 @@
 {
-  "name": "iota-agent",
+  "name": "miner-agent",
   "version": "0.1.1",
   "description": "Local guardian and status reporter for IOTA Train at Home miners",
   "license": "MIT",
@@ -18,7 +18,7 @@
     }
   },
   "bin": {
-    "iota-agent": "dist/cli.js"
+    "miner-agent": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

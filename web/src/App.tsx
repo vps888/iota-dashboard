@@ -212,7 +212,7 @@ function NoidPage({ address, onReset, onGoIota }: { address: string; onReset: ()
   const now = Math.floor(Date.now() / 1000)
   const scheduler = data?.localScheduler ?? null
   const local = scheduler?.snapshot ?? null
-  const statusLabel = scheduler?.stale ? '本地上报已过期' : local ? NOID_STATUS[local.mode].label : scheduler ? '本机 Agent 未运行 NOID' : '尚未绑定本机 Agent'
+  const statusLabel = scheduler?.stale ? '本地上报已过期' : local ? NOID_STATUS[local.mode].label : scheduler ? 'miner-agent 未运行 NOID' : '尚未绑定 miner-agent'
   const statusTone = scheduler?.stale ? 'warning' : local ? NOID_STATUS[local.mode].tone : 'neutral'
 
   return (
@@ -323,7 +323,7 @@ function NoidPage({ address, onReset, onGoIota }: { address: string; onReset: ()
                   <div className="agent-empty">
                     <span className="empty-mark">⌁</span>
                     <p>{scheduler ? 'Agent 已绑定，但没有可显示的 NOID 调度快照。' : '本机调度尚未绑定到此地址。请在 IOTA 项目页启用上报并将该 NOID 地址加入配对。'}</p>
-                    {!scheduler && <button className="link-btn" onClick={onGoIota}>去 IOTA 项目页配对本机 Agent</button>}
+                    {!scheduler && <button className="link-btn" onClick={onGoIota}>去 IOTA 项目页配对 miner-agent</button>}
                   </div>
                 )}
               </section>
@@ -461,13 +461,13 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                 <div className="lane-identity">
                   <span className="network-mark local-mark" aria-hidden="true">m</span>
                   <div>
-                    <span className="lane-kicker">mac-miner · 本机 Agent</span>
+                    <span className="lane-kicker">miner-agent · 本机调度</span>
                     <h3>本机调度</h3>
                   </div>
                 </div>
                 <div className="panel-status">
                   {data.localReport ? (
-                    <div className="panel-status-main" title="来自本机 iota-agent 的 opt-in 上报">
+                    <div className="panel-status-main" title="来自本机 miner-agent 的 opt-in 上报">
                       <span className={`status-dot ${data.localReport.stale ? 'warning' : LOCAL_STATUS[data.localReport.status].tone}`} />
                       {data.localReport.stale ? '上报已过期' : LOCAL_STATUS[data.localReport.status].label}
                     </div>
@@ -504,7 +504,7 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                       <strong>{fmtAgo(data.localReport.reportedAtServer, now)}</strong>
                     </div>
                     <div className="metric">
-                      <span>Agent 版本</span>
+                      <span>miner-agent 版本</span>
                       <strong>{data.localReport.agentVersion}</strong>
                     </div>
                     <div className="metric">
@@ -520,7 +520,7 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
               ) : (
                 <div className="agent-empty">
                   <span className="empty-mark">⌁</span>
-                  <p>连接本机 Agent 后，查看 IOTA 队列与守护状态。上报默认关闭，只发送你授权的数据。</p>
+                  <p>连接 miner-agent 后，查看 IOTA 队列与守护状态。上报默认关闭，只发送你授权的数据。</p>
                 </div>
               )}
             </section>
@@ -701,10 +701,10 @@ function TokenDialog({ minerId, noidAddress, onClose }: { minerId: string; noidA
   }
 
   const steps = token ? [
-    { title: '安装本地管理程序', command: 'npm install -g iota-agent', note: '当前 CLI 名称仍是 iota-agent；NOID 调度需要包含此功能的 mac-miner 版本。' },
-    { title: '启用登录后守护', command: 'iota-agent install', note: '每 30 秒读取 IOTA 状态；不会改动钱包。' },
-    { title: '配对并启用在线上报', command: `iota-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`, note: noidAddress ? `此令牌同时绑定 NOID 地址 ${noidAddress.slice(0, 7)}…${noidAddress.slice(-6)}；NOID 本地调度状态会单独显示在 NOID 页面。` : '尚未设置 NOID 地址；以后补充地址后需重新配对，才能关联 NOID 本地调度状态。' },
-    { title: '启用 NOID 调度（可选）', command: 'iota-agent noid enable', note: '需先安装 mac-miner 定制版 NOID Miner.app，并退出旧版矿工。' },
+    { title: '安装 miner-agent', command: 'npm install -g miner-agent', note: '可选启用 NOID 调度；需安装 mac-miner 定制版 NOID Miner。' },
+    { title: '启用登录后守护', command: 'miner-agent install', note: '每 30 秒读取 IOTA 状态；不会改动钱包。' },
+    { title: '配对并启用在线上报', command: `miner-agent report --enable --token ${token} --url ${location.origin} --miner ${minerId}`, note: noidAddress ? `此令牌同时绑定 NOID 地址 ${noidAddress.slice(0, 7)}…${noidAddress.slice(-6)}；NOID 本地调度状态会单独显示在 NOID 页面。` : '尚未设置 NOID 地址；以后补充地址后需重新配对，才能关联 NOID 本地调度状态。' },
+    { title: '启用 NOID 调度（可选）', command: 'miner-agent noid enable', note: '需先安装 mac-miner 定制版 NOID Miner.app，并退出旧版矿工。' },
   ] : []
 
   const copy = async (index: number, text: string) => {
@@ -721,12 +721,12 @@ function TokenDialog({ minerId, noidAddress, onClose }: { minerId: string; noidA
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>连接本机 mac-miner Agent</h3>
+          <h3>连接 miner-agent</h3>
           <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </div>
         {!token ? (
           <div className="modal-body">
-            <p>mac-miner Agent 运行在矿机本机，观察 IOTA 状态并按策略调度 NOID。在线上报需要单独授权；两个项目使用独立页面和身份。</p>
+            <p>miner-agent 运行在矿机本机，观察 IOTA 状态并按策略调度 NOID。在线上报需要单独授权；两个项目使用独立页面和身份。</p>
             <p className="modal-note">上报字段包含 IOTA 队列/控制状态；绑定 NOID 地址时，另上报 NOID 调度模式、CPU/GPU 目标占空比、算力与份额计数。不含私钥、助记词、能耗或收益。绑定后，这两个公开标识会关联；知道对应 Miner ID 或 NOID 地址的人可能看到该身份对应的本地状态。令牌仅用于本机上报，只显示一次，90 天过期。</p>
             {error && <div className="setup-error">{error}</div>}
             <button onClick={generate} disabled={busy}>{busy ? '生成中…' : '生成配对令牌'}</button>
@@ -743,7 +743,7 @@ function TokenDialog({ minerId, noidAddress, onClose }: { minerId: string; noidA
                 <pre className="token-command">{step.command}</pre>
               </div>
             ))}
-            <p className="modal-note">关闭窗口后令牌不再显示;如需更换,重新生成即可(旧令牌在过期前仍有效,可在矿机上执行 iota-agent report --disable 停用)。</p>
+            <p className="modal-note">关闭窗口后令牌不再显示;如需更换,重新生成即可(旧令牌在过期前仍有效,可在矿机上执行 miner-agent report --disable 停用)。</p>
           </div>
         )}
       </div>

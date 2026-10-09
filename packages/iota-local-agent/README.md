@@ -1,4 +1,4 @@
-# iota-agent
+# miner-agent
 
 IOTA Train at Home 本地守护与状态上报工具（macOS）。
 
@@ -14,7 +14,7 @@ IOTA Train at Home 本地守护与状态上报工具（macOS）。
 ## 安装
 
 ```bash
-npm install -g iota-agent
+npm install -g miner-agent
 ```
 
 要求:macOS、Node 20+、已安装官方 IOTA Train at Home.app。
@@ -23,30 +23,30 @@ npm install -g iota-agent
 
 ```bash
 # 1. 安装登录后自动运行的守护(LaunchAgent)
-iota-agent install
+miner-agent install
 
 # 2. 优化启动(替代直接打开官方应用)
-iota-agent start
+miner-agent start
 
 # 3. 查看最近守护结果
-iota-agent status
+miner-agent status
 
 # 4. 可选:安装自编译定制版 NOID Miner 后启用 IOTA 优先调度
-iota-agent noid enable
+miner-agent noid enable
 # 可选指定应用包路径
-iota-agent noid enable --app "/Applications/NOID Miner.app"
-iota-agent noid status
-iota-agent noid disable  # 恢复默认负载,不停止矿工
+miner-agent noid enable --app "/Applications/NOID Miner.app"
+miner-agent noid status
+miner-agent noid disable  # 恢复默认负载,不停止矿工
 
 # 5. 启用状态上报:先在仪表盘页面点「生成配对令牌」
-iota-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
+miner-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
 
 # 停用上报 / 卸载守护
-iota-agent report --disable
-iota-agent uninstall
+miner-agent report --disable
+miner-agent uninstall
 ```
 
-数据文件位于 `~/.iota-agent/`(权限 0600):`config.json`(配置)、`state.json`(守护状态)、`guardian.log`(事件日志)。
+数据文件位于 `~/.miner-agent/`(权限 0600):`config.json`(配置)、`state.json`(守护状态)、`guardian.log`(事件日志)。
 
 ## 上报内容与隐私
 

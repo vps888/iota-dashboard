@@ -16,20 +16,20 @@ import { reconcileNoid, resetNoidDuty } from './noid-controller.js'
 import { createReporter, ReportSink, AGENT_VERSION, currentOs, type ReportPayload } from './reporter.js'
 
 function usage(): void {
-  console.log(`iota-agent ${AGENT_VERSION} - IOTA Train at Home 本地守护与状态上报
+  console.log(`miner-agent ${AGENT_VERSION} - IOTA Train at Home 本地守护与状态上报
 
 用法:
-  iota-agent install              安装登录后自动运行的 LaunchAgent 守护
-  iota-agent uninstall            停止并移除 LaunchAgent 守护
-  iota-agent run [--once]         运行守护循环(--once 只检查一轮,不重启)
-  iota-agent status               显示最近一次守护结果
-  iota-agent start                优化启动:先起本地中继再拉起官方应用
-  iota-agent noid enable [--app <path>] 启用 NOID 自动启动与负载调度
-  iota-agent noid disable         关闭调度并恢复 NOID 默认负载(不停止挖矿)
-  iota-agent noid status           显示 NOID 调度配置与最近状态
-  iota-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>
+  miner-agent install              安装登录后自动运行的 LaunchAgent 守护
+  miner-agent uninstall            停止并移除 LaunchAgent 守护
+  miner-agent run [--once]         运行守护循环(--once 只检查一轮,不重启)
+  miner-agent status               显示最近一次守护结果
+  miner-agent start                优化启动:先起本地中继再拉起官方应用
+  miner-agent noid enable [--app <path>] 启用 NOID 自动启动与负载调度
+  miner-agent noid disable         关闭调度并恢复 NOID 默认负载(不停止挖矿)
+  miner-agent noid status           显示 NOID 调度配置与最近状态
+  miner-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>
                                   启用状态上报(默认关闭)
-  iota-agent report --disable     停用状态上报`)
+  miner-agent report --disable     停用状态上报`)
 }
 
 function fail(message: string): never {
@@ -137,7 +137,7 @@ async function noidCommand(args: string[]): Promise<void> {
     if (state.noidControl?.error) console.log('说明:', state.noidControl.error)
     return
   }
-  fail('用法:iota-agent noid enable [--app <path>] | disable | status')
+  fail('用法:miner-agent noid enable [--app <path>] | disable | status')
 }
 
 async function runGuardian(once: boolean): Promise<void> {
@@ -284,7 +284,7 @@ async function main(): Promise<void> {
       if (!appInstalled()) fail('找不到官方 IOTA 应用。请先安装官方 IOTA Train at Home.app。')
       await installLaunchAgent()
       console.log('安装完成。守护已注册为登录后自动运行(每三十秒检查;连续三次本地异常才重启;正常排队不会被重启)。')
-      console.log('如需状态上报,运行 iota-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>。')
+      console.log('如需状态上报,运行 miner-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>。')
       break
     case 'uninstall':
       await uninstallLaunchAgent()
@@ -296,7 +296,7 @@ async function main(): Promise<void> {
     case 'status': {
       const state = await readState<GuardianState>()
       if (!state.updatedAt) {
-        console.log('尚未运行过守护。先运行 iota-agent run 或 iota-agent install。')
+        console.log('尚未运行过守护。先运行 miner-agent run 或 miner-agent install。')
         break
       }
       display(state)
@@ -315,7 +315,7 @@ async function main(): Promise<void> {
         console.log('已停用状态上报。')
         break
       }
-      if (!args.includes('--enable')) fail('用法:iota-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>,或 --disable')
+      if (!args.includes('--enable')) fail('用法:miner-agent report --enable --token <t> --url <仪表盘地址> --miner <MinerID>,或 --disable')
       const token = argValue(args, '--token')
       const url = argValue(args, '--url')
       const miner = argValue(args, '--miner')

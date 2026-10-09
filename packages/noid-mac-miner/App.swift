@@ -47,7 +47,7 @@ final class MiningModel:ObservableObject {
  private func applyInitialAgentDuty(){
   guard let cpu=Self.argumentDuty("--agent-cpu-duty="),let gpu=Self.argumentDuty("--agent-gpu-duty=") else{return}
   controllerDuty=(cpu,gpu);lastControllerCommandAt=ProcessInfo.processInfo.systemUptime
-  agentControlledDuty="iota-agent 控制：CPU \(cpu)% / GPU \(gpu)%"
+  agentControlledDuty="miner-agent 控制：CPU \(cpu)% / GPU \(gpu)%"
  }
  private static func argumentDuty(_ prefix:String)->Int?{
   guard let value=CommandLine.arguments.first(where:{$0.hasPrefix(prefix)}).flatMap({Int($0.dropFirst(prefix.count))}), (10...100).contains(value) else{return nil}
@@ -59,8 +59,8 @@ final class MiningModel:ObservableObject {
    guard let self=self else{return ["ok":false,"error":"application unavailable"]}
    return self.handleControlRequest(request)
   }
-  do{try server.start();controlServer=server;startControlWatchdog();log("iota-agent 本地控制已就绪")}
-  catch{log("iota-agent 本地控制未启动：\(error.localizedDescription)")}
+  do{try server.start();controlServer=server;startControlWatchdog();log("miner-agent 本地控制已就绪")}
+  catch{log("miner-agent 本地控制未启动：\(error.localizedDescription)")}
  }
  func stopControlServer(){controlWatchdog?.cancel();controlWatchdog=nil;controlServer?.stop();controlServer=nil}
  private func startControlWatchdog(){
@@ -68,7 +68,7 @@ final class MiningModel:ObservableObject {
   timer.schedule(deadline:.now()+15,repeating:15)
   timer.setEventHandler{[weak self] in
    guard let self = self,let last=self.lastControllerCommandAt,self.controllerDuty != nil,ProcessInfo.processInfo.systemUptime-last>90 else{return}
-   self.controllerDuty=nil;self.lastControllerCommandAt=nil;self.agentControlledDuty=nil;self.updateLoad();self.log("iota-agent 心跳超时，恢复 NOID 默认负载")
+   self.controllerDuty=nil;self.lastControllerCommandAt=nil;self.agentControlledDuty=nil;self.updateLoad();self.log("miner-agent 心跳超时，恢复 NOID 默认负载")
   }
   timer.resume();controlWatchdog=timer
  }
@@ -80,7 +80,7 @@ final class MiningModel:ObservableObject {
    case "setDuty":
     guard let cpu=request["cpuDuty"] as? Int,let gpu=request["gpuDuty"] as? Int,(10...100).contains(cpu),(10...100).contains(gpu) else{return ["ok":false,"error":"duty must be 10...100" ]}
     controllerDuty=(cpu,gpu);lastControllerCommandAt=ProcessInfo.processInfo.systemUptime
-    agentControlledDuty="iota-agent 控制：CPU \(cpu)% / GPU \(gpu)%";updateLoad();return controlSnapshot()
+    agentControlledDuty="miner-agent 控制：CPU \(cpu)% / GPU \(gpu)%";updateLoad();return controlSnapshot()
    case "ensureRunning":
     lastControllerCommandAt=ProcessInfo.processInfo.systemUptime
     if !running{mode = .both;start()}
@@ -100,7 +100,7 @@ final class MiningModel:ObservableObject {
   guard panel.runModal() == .OK,let url=panel.url else{return}
   let safe=logs.map{$0.replacingOccurrences(of:"o1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{12,88}",with:"[钱包已隐藏]",options:.regularExpression)}
   let (effectiveCpu,effectiveGpu,_)=load.get()
-  let text="NOID Miner 0.4.1 · iota-agent\nCPU threads: \(cpuThreads), CPU duty: \(effectiveCpu)%, GPU duty target: \(effectiveGpu)%, thermal protection: \(thermalProtection)\n"+safe.joined(separator:"\n")+"\n"
+  let text="NOID Miner 0.4.1 · miner-agent\nCPU threads: \(cpuThreads), CPU duty: \(effectiveCpu)%, GPU duty target: \(effectiveGpu)%, thermal protection: \(thermalProtection)\n"+safe.joined(separator:"\n")+"\n"
   do{try text.write(to:url,atomically:true,encoding:.utf8)}catch{log("日志保存失败：\(error.localizedDescription)")}
  }
  func log(_ message:String){DispatchQueue.main.async{[weak self] in guard let self=self else{return};self.logs.append(Date().formatted(date:.omitted,time:.standard)+"  "+message);if self.logs.count>150 {self.logs.removeFirst(self.logs.count-150)}}}
@@ -139,7 +139,7 @@ struct ContentView:View {
    HStack{Text("GPU 强度：\(Int(model.gpuIntensity))%").frame(width:135,alignment:.leading);Slider(value:$model.gpuIntensity,in:10...100,step:5).disabled(model.mode == .cpu || model.agentControlledDuty != nil);Text("10–100%").font(.caption).foregroundStyle(.secondary)}
    if let control=model.agentControlledDuty{Text(control+"（占空比，不是功耗上限）").font(.caption).foregroundStyle(.blue)}
    HStack{Toggle("系统过热自动降载",isOn:$model.thermalProtection);Spacer();Text("散热：\(model.thermalState)").font(.caption).foregroundStyle(.secondary)}
-   Text("CPU/GPU 强度是目标计算占空比，可运行中调整；不是功耗上限，实际占用率会波动。iota-agent 接管时显示当前调度值。").font(.caption).foregroundStyle(.secondary)
+   Text("CPU/GPU 强度是目标计算占空比，可运行中调整；不是功耗上限，实际占用率会波动。miner-agent 接管时显示当前调度值。").font(.caption).foregroundStyle(.secondary)
    HStack{Button("开始挖矿"){model.start()}.buttonStyle(.borderedProminent).disabled(model.running);Button("停止挖矿"){model.stop()}.disabled(!model.running);Spacer();Text("退出程序会停止挖矿").foregroundStyle(.secondary).font(.caption)}
    Divider()
    HStack(spacing:30){metric("CPU 算力",model.rate(model.cpuRate));metric("GPU 算力",model.rate(model.gpuRate));metric("合计算力",model.rate(model.cpuRate+model.gpuRate))}
