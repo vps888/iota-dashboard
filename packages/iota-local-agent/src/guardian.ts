@@ -26,6 +26,7 @@ export interface Evidence {
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
+  p2pRestartRecommended: boolean
 }
 
 export interface HealthInfo {
@@ -130,6 +131,7 @@ export function emptyEvidence(sessionStartedAt: number): Evidence {
     exitedAt: null,
     quitAt: null,
     fatal: false,
+    p2pRestartRecommended: false,
   }
 }
 
@@ -149,6 +151,7 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
       exitedAt: previous.exitedAt ?? null,
       quitAt: previous.quitAt ?? null,
       fatal: previous.fatal ?? false,
+      p2pRestartRecommended: previous.p2pRestartRecommended ?? false,
     })
   }
   for (const { t, line } of records) {
@@ -188,6 +191,9 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
     }
     if (line.includes('Miner control host gating failed') || line.includes('Failed to execute script')) {
       result.fatal = true
+    }
+    if (/No p2p_node_ids found on any adjacent-layer peer|No routable peers for layer-\d+/i.test(line)) {
+      result.p2pRestartRecommended = true
     }
   }
   return result
@@ -295,6 +301,7 @@ export interface GuardianState {
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
+  p2pRestartRecommended: boolean
   updatedAt: string
   status: StatusKind
   description: string
@@ -327,15 +334,23 @@ async function signal(pid: number, signal: NodeJS.Signals): Promise<void> {
 }
 
 // 终止前用 ps 重核命令行,防止 PID 复用误杀无关进程
-export async function terminateIota(rows: Map<number, ProcessRow>): Promise<void> {
-  const app = appExecutablePath()
-  const worker = workerExecutablePath()
-  const targets = new Map<number, string>()
-  for (const [pid, row] of rows) {
-    if (row.command === app || row.command.startsWith(worker) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker')) {
-      targets.set(pid, row.command)
-    }
-  }
+function isIotaWorker(row: ProcessRow, worker: string): boolean {
+  return row.command.startsWith(worker) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker')
+}
+
+export function selectOrphanedIotaWorkers(rows: Map<number, ProcessRow>, app: string, worker: string): Map<number, ProcessRow> {
+  const appRunning = [...rows.values()].some((row) => row.command === app)
+  if (appRunning) return new Map()
+  // 包内 main_pool 可执行文件和其 Python multiprocessing 子进程都属于该 worker。
+  return new Map([...rows].filter(([, row]) => isIotaWorker(row, worker)))
+}
+
+export function orphanedIotaWorkers(rows: Map<number, ProcessRow>): Map<number, ProcessRow> {
+  return selectOrphanedIotaWorkers(rows, appExecutablePath(), workerExecutablePath())
+}
+
+async function terminateTargets(targets: Map<number, string>, message: string): Promise<void> {
+  if (targets.size === 0) return
   const alive = async (): Promise<boolean> => {
     const fresh = await processes()
     return [...targets].some(([pid, command]) => fresh.get(pid)?.command === command)
@@ -351,7 +366,24 @@ export async function terminateIota(rows: Map<number, ProcessRow>): Promise<void
       await new Promise((r) => setTimeout(r, 500))
     }
   }
-  throw new Error('IOTA 进程未能退出,未启动重复实例')
+  throw new Error(message)
+}
+
+// 结束同一批已确认的 IOTA 进程;每次发信号前都重核命令行,防止 PID 复用误杀。
+export async function terminateIota(rows: Map<number, ProcessRow>): Promise<void> {
+  const worker = workerExecutablePath()
+  const targets = new Map<number, string>()
+  for (const [pid, row] of rows) {
+    if (row.command === appExecutablePath() || isIotaWorker(row, worker)) targets.set(pid, row.command)
+  }
+  await terminateTargets(targets, 'IOTA 进程未能退出,未启动重复实例')
+}
+
+// App 已退出时清理所有可确认属于它的 main_pool 及其 multiprocessing 子进程。
+export async function terminateOrphanedIotaWorkers(rows: Map<number, ProcessRow>): Promise<number> {
+  const orphans = orphanedIotaWorkers(rows)
+  await terminateTargets(new Map([...orphans].map(([pid, row]) => [pid, row.command])), '残留 IOTA main_pool 未能退出,未启动新的 App')
+  return orphans.size
 }
 
 export { INTERVAL_SEC }

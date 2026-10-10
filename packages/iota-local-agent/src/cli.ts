@@ -8,7 +8,7 @@ import { loadConfig, updateConfig, type AgentConfig } from './config.js'
 import { readState, saveState, event, clockString } from './state.js'
 import {
   INTERVAL_SEC, processes, logRecords, parseLogs, health, classify, decision,
-  terminateIota, appExecutablePath, workerExecutablePath, type GuardianState, type NoidControlState,
+  terminateIota, orphanedIotaWorkers, appExecutablePath, workerExecutablePath, type GuardianState, type NoidControlState,
 } from './guardian.js'
 import { startOptimized, appInstalled } from './launcher.js'
 import { installLaunchAgent, uninstallLaunchAgent } from './launchagent.js'
@@ -62,10 +62,17 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
   const app = appExecutablePath()
   const worker = workerExecutablePath()
   const appPid = [...rows.values()].find((row) => row.command === app)?.pid ?? null
+  const appRunning = [...rows.values()].some((row) => row.command === app)
+  const orphanedWorkers = appRunning ? new Map() : orphanedIotaWorkers(rows)
   const minerAlive = [...rows.values()].some((row) => row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker') || row.command.startsWith(worker))
   const evidence = parseLogs(await logRecords(), previous)
   const control = await health()
-  const { status, description, bad } = classify(evidence, appPid, minerAlive, control, now)
+  const classified = classify(evidence, appPid, minerAlive, control, now)
+  const status = classified.status
+  const description = evidence.p2pRestartRecommended
+    ? `${classified.description};检测到 P2P 节点缺失,建议彻底退出 IOTA 并通过 miner-agent start 清理残留进程后重启`
+    : classified.description
+  const bad = classified.bad
   const sameSession = evidence.sessionStartedAt === previous.sessionStartedAt
   const state: GuardianState = {
     ...evidence,
@@ -78,7 +85,9 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
     badChecks: bad ? ((sameSession ? (previous.badChecks ?? 0) : 0) + 1) : 0,
     lastRestartAt: previous.lastRestartAt ?? null,
     restartHistory: previous.restartHistory ?? [],
-    recoveryNote: null,
+    recoveryNote: orphanedWorkers.size > 0
+      ? `发现 ${orphanedWorkers.size} 个残留 main_pool 进程;确认 App 已退出后,miner-agent start 会先清理`
+      : evidence.p2pRestartRecommended ? '日志检测到相邻层 P2P 节点缺失;建议彻底退出 IOTA 并使用 miner-agent start 重启' : null,
     agentStartedAt,
     totalRestarts,
     noidControl: previous.noidControl ?? null,
@@ -222,7 +231,7 @@ async function runGuardian(once: boolean): Promise<void> {
           await event(state.recoveryNote)
         }
       }
-      if (state.status !== previous.status || state.queuePosition !== previous.queuePosition) {
+      if (state.status !== previous.status || state.queuePosition !== previous.queuePosition || state.p2pRestartRecommended !== previous.p2pRestartRecommended) {
         await event(state.description)
       }
       {

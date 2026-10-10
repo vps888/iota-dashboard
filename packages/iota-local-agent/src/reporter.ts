@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { platform } from 'node:os'
 
-export const AGENT_VERSION = '0.1.0'
+export const AGENT_VERSION = '0.1.2'
 
 export interface NoidReportPayload {
   mode: 'training' | 'default' | 'disabled' | 'unmanaged' | 'error'

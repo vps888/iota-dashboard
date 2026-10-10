@@ -6,8 +6,8 @@ IOTA Train at Home 本地守护与状态上报工具（macOS）。
 
 ## 功能
 
-- **守护矿机**:每 30 秒检查官方应用与矿工进程、本地控制服务(`127.0.0.1:8010`)、官方日志;连续三次本地异常才自动重启,带五分钟启动宽限、十五分钟重启退避、每小时最多三次;正常排队与正常退出绝不重启
-- **优化启动**:先启动仅监听 `127.0.0.1:18010` 的本地中继(等待真实矿工最多 180 秒,不伪造健康响应),再以中继地址拉起官方应用
+- **守护矿机**:每 30 秒检查官方应用与矿工进程、本地控制服务(`127.0.0.1:8010`)、官方日志;连续三次本地异常才自动重启,带五分钟启动宽限、十五分钟重启退避、每小时最多三次;正常排队与正常退出绝不重启。检测到 `No p2p_node_ids found on any adjacent-layer peer` 或 `No routable peers for layer-*` 时,状态与上报说明会建议彻底退出 IOTA 并重启
+- **优化启动**:确认官方 App 已退出后,清理 IOTA `main_pool` 进程及 multiprocessing 子进程(不受 PPID 限制);再启动仅监听 `127.0.0.1:18010` 的本地中继(等待真实矿工最多 180 秒,不伪造健康响应),最后以中继地址拉起官方应用
 - **状态上报**(默认关闭):经你显式授权后,每 30 秒向 [iota-dashboard](https://github.com/) 仪表盘发送脱敏状态
 - **NOID 负载调度**(默认关闭):显式启用后,排队/等待时自动运行 NOID 默认负载;IOTA 有实际训练活动时保持矿池连接并将 CPU/GPU 占空比降至 10%;监控失败或状态未知时恢复默认负载
 
@@ -25,7 +25,7 @@ npm install -g miner-agent
 # 1. 安装登录后自动运行的守护(LaunchAgent)
 miner-agent install
 
-# 2. 优化启动(替代直接打开官方应用)
+# 2. 清理 App 退出后main_pool 残留,再优化启动(替代直接打开官方应用)
 miner-agent start
 
 # 3. 查看最近守护结果
@@ -46,11 +46,17 @@ miner-agent report --disable
 miner-agent uninstall
 ```
 
+`miner-agent start` 会在确认官方 App 未运行时,清理命令行匹配 IOTA `main_pool` 的残留进程及其 multiprocessing 子进程,不受 PPID 限制;若 App 仍运行则不会触碰 worker。终止前会重新核对 PID 对应的命令行。
+
 数据文件位于 `~/.miner-agent/`(权限 0600):`config.json`(配置)、`state.json`(守护状态)、`guardian.log`(事件日志)。
+
+## 自动发布
+
+推送涉及本包的提交到 `main` 后,仓库 GitHub Actions 会运行构建和测试,再通过 OIDC Trusted Publishing 发布 npm 并生成 provenance。发布前递增本包 `package.json` 版本。首次使用前,需要在 npm 包设置中添加 GitHub Actions Trusted Publisher:仓库 `vps888/iota-dashboard`,工作流文件 `miner-agent-publish.yml`;pull request 仅运行测试,不会发布。
 
 ## 上报内容与隐私
 
-上报**仅含**:守护状态分类、描述文本、队列位置、控制连接布尔值、重启计数、运行时长、操作系统类型、代理版本。
+上报**仅含**:守护状态分类、描述文本(可能包含故障诊断与重启建议)、队列位置、控制连接布尔值、重启计数、运行时长、操作系统类型、代理版本。
 
 上报**绝不含**:主机名、文件路径、PID、日志内容、钱包或任何密钥。上报默认关闭,令牌在云端只存 SHA-256 哈希,90 天自动过期。不上报时工具完全不产生网络请求(除官方应用自身)。
 

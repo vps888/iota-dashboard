@@ -1,0 +1,61 @@
+name: Build and publish miner-agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/iota-local-agent/**'
+      - '.github/workflows/miner-agent-publish.yml'
+  pull_request:
+    paths:
+      - 'packages/iota-local-agent/**'
+      - '.github/workflows/miner-agent-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Build and test miner-agent
+        run: npm test --workspace=miner-agent
+
+  test-and-publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Build and test miner-agent
+        run: npm test --workspace=miner-agent
+      - name: Check whether this version is already published
+        id: version
+        working-directory: packages/iota-local-agent
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "miner-agent@${version}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "miner-agent@${version} is already published; skipping"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to npm with OIDC Trusted Publishing
+        if: steps.version.outputs.published == 'false'
+        working-directory: packages/iota-local-agent
+        run: npm publish --access public

@@ -1,6 +1,6 @@
 {
   "name": "miner-agent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local guardian and status reporter for IOTA Train at Home miners",
   "license": "MIT",
   "type": "module",

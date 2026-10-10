@@ -67,8 +67,8 @@ docker compose --profile public up -d
 
 `packages/iota-local-agent` 是从社区 Python 工具移植的 Node/TypeScript 守护,安装在本机后可:
 
-1. **守护矿机**:每 30 秒检查官方应用与矿工进程、本地控制服务、官方日志;连续三次异常才自动重启(五分钟启动宽限、十五分钟退避、每小时最多三次);排队与正常退出绝不重启
-2. **优化启动**:先启动仅监听 `127.0.0.1:18010` 的本地中继(等待真实矿工最多 180 秒,不伪造健康),再以中继地址拉起官方应用
+1. **守护矿机**:每 30 秒检查官方应用与矿工进程、本地控制服务、官方日志;连续三次异常才自动重启(五分钟启动宽限、十五分钟退避、每小时最多三次);排队与正常退出绝不重启。检测到相邻层缺少 `p2p_node_ids` 或没有可路由的 P2P peer 时,状态和上报说明会建议彻底退出并重启
+2. **优化启动**:`miner-agent start` 确认官方 App 已退出后,先清理所有属于该 App 的残留 `main_pool` 及其 multiprocessing 子进程,不受 PPID 限制,再启动仅监听 `127.0.0.1:18010` 的本地中继(等待真实矿工最多 180 秒,不伪造健康),最后以中继地址拉起官方应用
 3. **状态上报**(默认关闭):经用户显式授权后,每 30 秒向仪表盘发送脱敏状态
 
 ### 安装与使用
@@ -77,11 +77,15 @@ docker compose --profile public up -d
 npm run build --workspace=iota-local-agent
 # 安装登录后自动运行的守护(LaunchAgent)
 npm exec --workspace=iota-local-agent -- miner-agent install
-# 优化启动(替代直接打开官方应用)
+# 清理 App 退出后残留的 main_pool 进程,再优化启动(替代直接打开官方应用)
 npm exec --workspace=iota-local-agent -- miner-agent start
 # 查看最近守护结果
 npm exec --workspace=iota-local-agent -- miner-agent status
 ```
+
+### 自动发布 miner-agent
+
+推送涉及 `packages/iota-local-agent/**` 的提交到 `main` 后,GitHub Actions 会构建并测试该包,再使用 OIDC Trusted Publishing 发布到 npm 并生成 provenance。每次发布前需递增 `packages/iota-local-agent/package.json` 的版本号。首次启用前,在 npm 包 `miner-agent` 的 Trusted Publishers 设置中添加 GitHub Actions publisher,仓库设为 `vps888/iota-dashboard`,工作流文件设为 `miner-agent-publish.yml`;无需保存 npm 发布 token。该 workflow 的 pull request 触发只运行测试,不会发布。
 
 ### 启用状态上报
 
@@ -91,7 +95,7 @@ npm exec --workspace=iota-local-agent -- miner-agent status
 miner-agent report --enable --token <令牌> --url <仪表盘地址> --miner <Miner-ID>
 ```
 
-上报内容仅限:守护状态、队列位置、控制连接、重启次数、运行时长、系统类型、代理版本；定制 NOID 调度启用时附带当前模式、CPU/GPU 目标占空比、算力和份额计数。**不含**钱包/私钥、主机名、文件路径、PID、日志、收益或电耗。令牌在云端只存 SHA-256 哈希,90 天自动过期;停用上报随时执行 `miner-agent report --disable`。数据文件位于 `~/.miner-agent/`(权限 0600)。
+上报内容仅限:守护状态与诊断说明、队列位置、控制连接、重启次数、运行时长、系统类型、代理版本；定制 NOID 调度启用时附带当前模式、CPU/GPU 目标占空比、算力和份额计数。**不含**钱包/私钥、主机名、文件路径、PID、日志、收益或电耗。令牌在云端只存 SHA-256 哈希,90 天自动过期;停用上报随时执行 `miner-agent report --disable`。数据文件位于 `~/.miner-agent/`(权限 0600)。
 
 ### 卸载
 

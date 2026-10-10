@@ -4,7 +4,7 @@ import { open, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { RELAY_LOG_PATH, LAUNCH_LOG_PATH, RELAY_PID_PATH } from './paths.js'
-import { appExecutablePath, execFileText, processes } from './guardian.js'
+import { appExecutablePath, execFileText, processes, terminateOrphanedIotaWorkers } from './guardian.js'
 import { RELAY_PORT } from './relay.js'
 
 const THREAD_ENV_KEYS = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'TOKENIZERS_PARALLELISM']
@@ -53,6 +53,9 @@ export async function startOptimized(): Promise<void> {
     console.log('IOTA 已在运行,不启动重复实例。需要切换到优化启动时,请先从 IOTA 菜单退出,再运行此启动器。')
     return
   }
+
+  const cleaned = await terminateOrphanedIotaWorkers(rows)
+  if (cleaned > 0) console.log(`已清理 ${cleaned} 个 IOTA main_pool 残留进程。`)
 
   if (!(await relayAlreadyRunning())) {
     if (await portInUse(RELAY_PORT)) {
