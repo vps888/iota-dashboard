@@ -115,6 +115,8 @@ export interface DashboardData {
 
 const STORAGE_KEY = 'iota-dashboard:miner-id'
 const NOID_STORAGE_KEY = 'mac-miner:noid-address'
+const DASHBOARD_CACHE_KEY = 'mac-miner:dashboard-cache:'
+const NOID_CACHE_KEY = 'mac-miner:noid-cache:'
 const REFRESH_MS = 60_000
 
 export function getSavedMinerId(): string | null {
@@ -215,7 +217,13 @@ export function useDashboard(minerId: string | null): {
   refresh: () => void
   countdown: number
 } {
-  const [data, setData] = useState<DashboardData | null>(null)
+  const [data, setData] = useState<DashboardData | null>(() => {
+    if (!minerId) return null
+    try {
+      const cached = localStorage.getItem(`${DASHBOARD_CACHE_KEY}${minerId}`)
+      return cached ? JSON.parse(cached) as DashboardData : null
+    } catch { return null }
+  })
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [fetchedAtMs, setFetchedAtMs] = useState<number | null>(null)
@@ -224,11 +232,16 @@ export function useDashboard(minerId: string | null): {
   useEffect(() => {
     if (!minerId) return
     let cancelled = false
+    try {
+      const cached = localStorage.getItem(`${DASHBOARD_CACHE_KEY}${minerId}`)
+      if (cached) setData(JSON.parse(cached) as DashboardData)
+    } catch { localStorage.removeItem(`${DASHBOARD_CACHE_KEY}${minerId}`) }
     setLoading(true)
     fetchDashboard(minerId)
       .then((value) => {
         if (cancelled) return
         setData(value)
+        try { localStorage.setItem(`${DASHBOARD_CACHE_KEY}${minerId}`, JSON.stringify(value)) } catch {}
         setError(null)
         setFetchedAtMs(Date.now())
       })
@@ -265,7 +278,13 @@ export function useNoidDashboard(address: string | null): {
   refresh: () => void
   countdown: number
 } {
-  const [data, setData] = useState<NoidDashboardData | null>(null)
+  const [data, setData] = useState<NoidDashboardData | null>(() => {
+    if (!address) return null
+    try {
+      const cached = localStorage.getItem(`${NOID_CACHE_KEY}${address}`)
+      return cached ? JSON.parse(cached) as NoidDashboardData : null
+    } catch { return null }
+  })
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [fetchedAtMs, setFetchedAtMs] = useState<number | null>(null)
@@ -274,11 +293,16 @@ export function useNoidDashboard(address: string | null): {
   useEffect(() => {
     if (!address) return
     let cancelled = false
+    try {
+      const cached = localStorage.getItem(`${NOID_CACHE_KEY}${address}`)
+      if (cached) setData(JSON.parse(cached) as NoidDashboardData)
+    } catch { localStorage.removeItem(`${NOID_CACHE_KEY}${address}`) }
     setLoading(true)
     fetchNoidDashboard(address)
       .then((response) => {
         if (cancelled) return
         setData(response)
+        try { localStorage.setItem(`${NOID_CACHE_KEY}${address}`, JSON.stringify(response)) } catch {}
         setError(null)
         setFetchedAtMs(Date.now())
       })
