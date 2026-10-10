@@ -396,7 +396,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                 <div className="lane-identity">
                   <span className="network-mark" aria-hidden="true">I</span>
                   <div>
-                    <span className="lane-kicker">IOTA · Bittensor SN9</span>
                     <h3>{data.miner?.name ?? 'IOTA Miner'}</h3>
                   </div>
                 </div>
@@ -442,10 +441,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                   <strong>{fmtAgo(data.lookup.sampleAt, now)}</strong>
                 </div>
                 <div className="metric">
-                  <span>名单覆盖</span>
-                  <strong>{data.lookup.coverage.successful} / {data.lookup.coverage.total}{data.lookup.stale ? ' · 缓存' : ''}</strong>
-                </div>
-                <div className="metric">
                   <span>最后有效贡献</span>
                   <strong className={data.miner?.lastContributionAt !== null && data.miner?.lastContributionAt !== undefined && now - data.miner.lastContributionAt > 3600 ? 'stale' : 'fresh'}>
                     {fmtContributionTime(data.miner?.lastContributionAt, now)}
@@ -461,8 +456,7 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                 <div className="lane-identity">
                   <span className="network-mark local-mark" aria-hidden="true">m</span>
                   <div>
-                    <span className="lane-kicker">miner-agent · 本机调度</span>
-                    <h3>本机调度</h3>
+                    <h3>本机监测</h3>
                   </div>
                 </div>
                 <div className="panel-status">
@@ -534,10 +528,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                     <span className="section-index">IOTA · Bittensor SN9</span>
                     <h2>运行概览</h2>
                   </div>
-                  <div className="miner-id-readout">
-                    <span>Miner ID</span>
-                    <code>{data.miner?.shortId ?? `${minerId.slice(0, 6)}…${minerId.slice(-6)}`}</code>
-                  </div>
                 </div>
                 <div className="machine-lanes">
                   {minerPanel}
@@ -549,7 +539,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
                 <section className="panel history-panel training-panel">
               <div className="panel-heading">
                 <div>
-                  <span>IOTA · 训练</span>
                   <h2>训练记录</h2>
                 </div>
               </div>
@@ -588,7 +577,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
               <section className="panel history-panel network-panel">
                 <div className="panel-heading">
                   <div>
-                    <span>网络容量 · 训练任务</span>
                     <h2>任务名额</h2>
                   </div>
                   <span>{data.runs.length} 个任务 · {data.runs[0]?.model ?? ''} {data.runs[0]?.modelSize ?? ''}</span>
@@ -624,7 +612,6 @@ function Dashboard({ minerId, noidAddress, onReset }: { minerId: string; noidAdd
               <section className="panel history-panel earnings-panel">
                 <div className="panel-heading">
                   <div>
-                    <span>结算记录</span>
                     <h2>收益与结算</h2>
                   </div>
                   <span>USD 单价 ${data.usdPerIota?.toFixed(2) ?? '—'}</span>
