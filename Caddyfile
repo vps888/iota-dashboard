@@ -1,4 +1,4 @@
 miner.zhetengxia.com {
   encode zstd gzip
-  reverse_proxy mac-miner:8080
+  reverse_proxy 172.19.0.2:8080
 }
