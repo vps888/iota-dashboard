@@ -2,8 +2,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const AGENT_DIR = join(homedir(), '.miner-agent')
+export const CONFIG_PATH = join(AGENT_DIR, 'config.json')
 export const STATE_PATH = join(AGENT_DIR, 'state.json')
 export const PROCESS_MONITOR_STATE_PATH = join(AGENT_DIR, 'process-monitor-state.json')
+export const SPEEDTEST_ALERT_STATE_PATH = join(AGENT_DIR, 'speedtest-alert-state.json')
 export const EVENTS_PATH = join(AGENT_DIR, 'guardian.log')
 export const LOCK_PATH = join(AGENT_DIR, 'guardian.lock')
 

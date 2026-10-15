@@ -67,7 +67,10 @@ test('polling process monitor compares PID and command identities and sends a Fe
   assert.match(source, /previous\.workers\.filter\(\(old\) => !current\.workers\.some\(\(now\) => now\.pid === old\.pid && now\.command === old\.command\)\)/)
   assert.match(source, /previous\.appPid !== null && current\.appPid === null/)
   assert.match(source, /IOTA 进程状态变化/)
-  assert.match(source, /await sendText\(client, config\.chatId, `IOTA 进程状态变化/)
+  assert.match(source, /await fanoutAgentAlert\(config, await loadAgentConfig\(\), alertText\)/)
+  assert.match(source, /const traceText = `来源=\$\{trace\.source\} event_id=\$\{trace\.eventId \?\? '—'\} message_id=\$\{messageId \|\| '—'\} sender\.open_id=\$\{sender\}/)
+  assert.match(source, /飞书命令收到：\$\{traceText\}/)
+  assert.match(source, /await event\(`飞书命令执行成功：\$\{traceText\}`\)/)
 })
 
 test('process monitor detects individual main_pool exits even when IOTA app remains alive', async () => {
@@ -98,4 +101,29 @@ test('network capacity headings include English tiers and each row shows model p
   assert.match(source, /\['银级', 'Silver'/)
   assert.match(source, /\['铜级', 'Bronze'/)
   assert.match(source, /`\$\{modelPrefix\} - \$\{run\.runId\}：/)
+})
+
+test('guardian and speedtest paths never automatically restart IOTA', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '../src')
+  const cli = await readFile(join(root, 'cli.ts'), 'utf8')
+  const feishu = await readFile(join(root, 'feishu.ts'), 'utf8')
+  const guardian = await readFile(join(root, 'guardian.ts'), 'utf8')
+  assert.doesNotMatch(cli, /decision\(|startOptimized\(\)[\s\S]{0,500}if \(.*abnormal/)
+  assert.match(cli, /异常只发飞书告警，不自动重启/)
+  assert.match(feishu, /command === 'restart' \? await restartAndReport\(traceText\)/)
+  assert.doesNotMatch(feishu, /download < 1[\s\S]{0,300}startOptimized/)
+  assert.doesNotMatch(guardian, /export function decision\(/)
+})
+
+test('low speedtest results only emit Feishu alerts and never trigger restart', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
+  assert.match(source, /async function monitorSpeedtest[\s\S]*latest\.download < 1 && latest\.upload < 1[\s\S]*fanoutAgentAlert/)
+  assert.match(source, /未自动重启，请检查后决定是否通过飞书手动「重启」/)
+  assert.doesNotMatch(source, /function monitorSpeedtest[\s\S]*?\n}\n[\s\S]{0,100}startOptimized/)
 })

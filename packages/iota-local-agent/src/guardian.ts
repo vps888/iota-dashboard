@@ -6,7 +6,6 @@ import { APP_BUNDLE_CANDIDATES, LOGS_DIR } from './paths.js'
 
 const INTERVAL_SEC = 30
 const GRACE_SEC = 300
-const COOLDOWN_SEC = 900
 
 export interface ProcessRow {
   pid: number
@@ -26,7 +25,7 @@ export interface Evidence {
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
-  p2pRestartRecommended: boolean
+  p2pAnomalyDetected: boolean
 }
 
 export interface HealthInfo {
@@ -75,6 +74,7 @@ export async function processes(): Promise<Map<number, ProcessRow>> {
 }
 
 const STAMP_RE = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\]/
+const LOG_TIME_ZONE = 'Asia/Shanghai'
 
 async function tail(path: string, bytes: number): Promise<string> {
   const info = await stat(path)
@@ -94,6 +94,31 @@ export interface LogRecord {
   line: string
 }
 
+export function parseLocalLogTimestamp(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d+)$/.exec(value)
+  if (!match) return Number.NaN
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText] = match
+  const year = Number(yearText), month = Number(monthText), day = Number(dayText)
+  const hour = Number(hourText), minute = Number(minuteText), second = Number(secondText)
+  const millisecond = Number((fractionText ?? '').padEnd(3, '0').slice(0, 3))
+  const desiredWall = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
+  const candidates = new Set<number>()
+  // IOTA CLI logs use China Standard Time (UTC+8), independent of the Mac display timezone.
+  for (const offsetMinutes of [480]) {
+    const candidate = desiredWall - offsetMinutes * 60_000
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: LOG_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(candidate))
+    const get = (type: string) => Number(parts.find((item) => item.type === type)?.value)
+    const actualWall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'), millisecond)
+    if (actualWall === desiredWall) candidates.add(candidate)
+  }
+  if (candidates.size) return Math.min(...candidates) / 1000
+  // Keep a host-local fallback only for invalid timestamps; valid IOTA logs match UTC+8 above.
+  return new Date(year, month - 1, day, hour, minute, second, millisecond).getTime() / 1000
+}
+
 export async function logRecords(): Promise<LogRecord[]> {
   const records: LogRecord[] = []
   if (!existsSync(LOGS_DIR)) return records
@@ -101,14 +126,23 @@ export async function logRecords(): Promise<LogRecord[]> {
     const files = (await readdir(LOGS_DIR))
       .filter((name) => name.includes(`-${kind}`) && name.endsWith('.log'))
       .map((name) => `${LOGS_DIR}/${name}`)
-    const withMtime = await Promise.all(files.map(async (f) => ({ f, mtime: (await stat(f)).mtimeMs })))
+    const withMtime = await Promise.all(files.map(async (f) => ({ f, name: f.split('/').pop() ?? '', mtime: (await stat(f)).mtimeMs })))
     withMtime.sort((a, b) => b.mtime - a.mtime)
-    for (const { f } of withMtime.slice(0, 3)) {
-      const text = await tail(f, 512 * 1024).catch(() => '')
+    const currentDay = new Intl.DateTimeFormat('en-CA', { timeZone: LOG_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+    const currentDayFile = withMtime.find((item) => item.name === `${currentDay}-${kind}.log`)
+    // Read the complete current-day log for live queue/status data; older rotated
+    // logs are only session/activity evidence and can be bounded to reduce I/O.
+    for (const { f, name } of withMtime.slice(0, 3)) {
+      const info = await stat(f).catch(() => null)
+      if (!info) continue
+      const isCurrentLog = currentDayFile?.name === name
+      const text = isCurrentLog
+        ? await tail(f, info.size).catch(() => '')
+        : await tail(f, 512 * 1024).catch(() => '')
       for (const line of text.split('\n')) {
         const match = STAMP_RE.exec(line)
         if (match) {
-          const t = Date.parse(match[1]) / 1000
+          const t = parseLocalLogTimestamp(match[1]!)
           if (Number.isFinite(t)) records.push({ t, line })
         }
       }
@@ -131,16 +165,19 @@ export function emptyEvidence(sessionStartedAt: number): Evidence {
     exitedAt: null,
     quitAt: null,
     fatal: false,
-    p2pRestartRecommended: false,
+    p2pAnomalyDetected: false,
   }
 }
 
 export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>): Evidence {
   const starts = records.filter((r) => r.line.includes('[iota-cli runIotaCli] Connecting to CHANNEL')).map((r) => r.t)
-  const started = starts.length > 0 ? Math.max(...starts) : (previous.sessionStartedAt ?? 0)
+  const latestStart = starts.length > 0 ? Math.max(...starts) : null
+  const previousStart = previous.sessionStartedAt ?? 0
+  // Keep the latest session start across date-based log rotation; never fall back to an older date's start.
+  const started = latestStart !== null ? Math.max(latestStart, previousStart) : previousStart
   const result = emptyEvidence(started)
-  // 日志轮转跨天时,仅同一矿机会话的证据沿用
-  if (started === previous.sessionStartedAt) {
+  // Queue/session evidence is durable across daily log rotation. The queue itself can outlive a restart.
+  if (started >= previousStart && previous.sessionStartedAt !== undefined) {
     Object.assign(result, {
       queuePosition: previous.queuePosition ?? null,
       queueUpdatedAt: previous.queueUpdatedAt ?? null,
@@ -151,7 +188,7 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
       exitedAt: previous.exitedAt ?? null,
       quitAt: previous.quitAt ?? null,
       fatal: previous.fatal ?? false,
-      p2pRestartRecommended: previous.p2pRestartRecommended ?? false,
+      p2pAnomalyDetected: previous.p2pAnomalyDetected ?? false,
     })
   }
   for (const { t, line } of records) {
@@ -193,7 +230,7 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
       result.fatal = true
     }
     if (/No p2p_node_ids found on any adjacent-layer peer|No routable peers for layer-\d+/i.test(line)) {
-      result.p2pRestartRecommended = true
+      result.p2pAnomalyDetected = true
     }
   }
   return result
@@ -231,47 +268,47 @@ export function classify(
   minerAlive: boolean,
   control: HealthInfo | null,
   now: number,
-): { status: StatusKind; description: string; bad: boolean } {
+): { status: StatusKind; description: string } {
   const started = evidence.sessionStartedAt
   if (!started && !minerAlive) {
-    return { status: 'paused', description: '尚未启动过矿工;先打开 IOTA 并点击 Start training', bad: false }
+    return { status: 'paused', description: '尚未启动过矿工;先打开 IOTA 并点击 Start training' }
   }
   if (evidence.quitAt && !appPid) {
-    return { status: 'paused', description: '应用正常退出,保留手动停止意图', bad: false }
+    return { status: 'paused', description: '应用正常退出,保留手动停止意图' }
   }
   if (evidence.exitedAt && evidence.exitCode === 0 && !minerAlive) {
-    return { status: 'paused', description: '矿工正常停止,等待手动启动或原有定时安排', bad: false }
+    return { status: 'paused', description: '矿工正常停止,等待手动启动或原有定时安排' }
   }
   if (appPid && now - started < GRACE_SEC) {
     const connected = Boolean(control?.connected && control.expectedHostPid === appPid)
     if (!connected) {
-      return { status: 'starting', description: '矿工启动中,五分钟宽限期内不重启', bad: false }
+      return { status: 'starting', description: '矿工启动中,处于五分钟监控宽限期' }
     }
   }
   if (!appPid) {
-    return { status: 'paused', description: 'IOTA 当前未运行；运行 ma start 启动', bad: false }
+    return { status: 'paused', description: 'IOTA 当前未运行；运行 ma start 启动' }
   }
   if (!minerAlive) {
-    return { status: 'abnormal', description: '矿工进程已退出', bad: true }
+    return { status: 'abnormal', description: '矿工进程已退出' }
   }
   if (!control?.ok) {
-    return { status: 'abnormal', description: '本地矿工控制服务不可访问', bad: true }
+    return { status: 'abnormal', description: '本地矿工控制服务不可访问' }
   }
   if (control.expectedHostPid !== appPid || !control.connected) {
-    return { status: 'abnormal', description: '矿工与桌面程序的控制连接断开', bad: true }
+    return { status: 'abnormal', description: '矿工与桌面程序的控制连接断开' }
   }
   if (evidence.trainingAt && now - evidence.trainingAt < 300) {
-    return { status: 'training', description: '最近五分钟有实际训练活动', bad: false }
+    return { status: 'training', description: '最近五分钟有实际训练活动' }
   }
   if (evidence.queueStatus === 'queued') {
     const stale = now - (evidence.queueUpdatedAt ?? 0) > 900
     const base = evidence.queuePosition !== null ? `官方排队第 ${evidence.queuePosition} 位` : '等待官方分配训练任务'
-    return { status: 'queued', description: base + (stale ? ';位置超过十五分钟未更新,暂不重启以免丢失队列' : ''), bad: false }
+    return { status: 'queued', description: base + (stale ? ';位置超过十五分钟未更新' : '') }
   }
   if (now - evidence.lastActivityAt > 1800) {
-    return { status: 'abnormal', description: '矿工三十分钟没有任何活动,且未处于排队状态', bad: true }
+    return { status: 'abnormal', description: '矿工三十分钟没有任何活动,且未处于排队状态' }
   }
-  return { status: 'waiting', description: '控制连接正常,等待注册、模型准备或训练任务', bad: false }
+  return { status: 'waiting', description: '控制连接正常,等待注册、模型准备或训练任务' }
 }
 
 export interface GuardianState {
@@ -286,7 +323,7 @@ export interface GuardianState {
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
-  p2pRestartRecommended: boolean
+  p2pAnomalyDetected: boolean
   updatedAt: string
   status: StatusKind
   description: string
@@ -295,21 +332,10 @@ export interface GuardianState {
   port18010?: Array<{ pid: number; command: string }>
   minerAlive: boolean
   controlConnected: boolean
-  badChecks: number
-  lastRestartAt: number | null
-  restartHistory: number[]
-  recoveryNote: string | null
   agentStartedAt: number
-  totalRestarts: number
+  orphanedWorkerCount?: number
 }
 
-export function decision(state: GuardianState, now: number): 'restart' | string | null {
-  if (state.badChecks < 3) return null
-  const history = (state.restartHistory ?? []).filter((t) => now - t < 3600)
-  if (history.length >= 3) return '小时重启上限已达三次,等待退避恢复'
-  if (state.lastRestartAt && now - state.lastRestartAt < COOLDOWN_SEC) return '重启后十五分钟退避期内'
-  return 'restart'
-}
 
 async function signal(pid: number, signal: NodeJS.Signals): Promise<void> {
   try {

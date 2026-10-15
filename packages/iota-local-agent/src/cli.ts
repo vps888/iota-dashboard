@@ -5,16 +5,17 @@ import process from 'node:process'
 import { LOCK_PATH } from './paths.js'
 import { readState, saveState, event, clockString } from './state.js'
 import {
-  INTERVAL_SEC, processes, logRecords, parseLogs, health, classify, decision,
-  terminateIota, orphanedIotaWorkers, appExecutablePath, workerExecutablePath, type GuardianState,
+  INTERVAL_SEC, processes, logRecords, parseLogs, health, classify,
+  orphanedIotaWorkers, appExecutablePath, workerExecutablePath, type GuardianState,
 } from './guardian.js'
 import { startOptimized, appInstalled, isManagedRelayCommand, inspectRelayPort } from './launcher.js'
+import { fanoutAgentAlert, loadAgentConfig } from './feishu-alert.js'
 import { installLaunchAgent, installFeishuLaunchAgent, stopFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
 import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.8'
+const AGENT_VERSION = '0.2.9'
 
 function usage(): void {
   console.log(`ma ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
@@ -25,6 +26,7 @@ function usage(): void {
   ma status               查看 IOTA 与监控服务状态
   ma start                启动 IOTA（已运行时不重复启动）
   ma feishu setup         交互配置飞书应用凭据并自动发现本机 Miner ID
+  ma alert add <chat_id>  将进程异常告警也推送到指定飞书群
   ma miner list           列出自动发现的本机 Miner ID
   ma miner select <序号>  选择用于飞书查询的 Miner ID
   ma feishu connect       自动配对飞书会话与当前用户
@@ -53,7 +55,7 @@ function acquireLock(): void {
   process.once('exit', () => { try { unlinkSync(LOCK_PATH) } catch {} })
 }
 
-async function poll(previous: Partial<GuardianState>, agentStartedAt: number, totalRestarts: number): Promise<{ state: GuardianState; rows: Awaited<ReturnType<typeof processes>> }> {
+async function poll(previous: Partial<GuardianState>, agentStartedAt: number): Promise<{ state: GuardianState; rows: Awaited<ReturnType<typeof processes>> }> {
   const now = Date.now() / 1000
   const rows = await processes()
   const app = appExecutablePath()
@@ -68,13 +70,12 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
   const relayListener = relayListeners.find((listener) => isManagedRelayCommand(listener.command))
   const classified = classify(evidence, appPid, minerAlive, control, now)
   const status = classified.status
-  const description = evidence.p2pRestartRecommended
-    ? `${classified.description};检测到 P2P 节点缺失,建议彻底退出 IOTA 并通过 ma start 清理残留进程后重启`
+  const description = evidence.p2pAnomalyDetected
+    ? `${classified.description};检测到 P2P 节点异常`
     : classified.description
-  const bad = classified.bad
-  const sameSession = evidence.sessionStartedAt === previous.sessionStartedAt
   const state: GuardianState = {
     ...evidence,
+    orphanedWorkerCount: orphanedWorkers.size,
     updatedAt: clockString(now),
     status,
     description,
@@ -83,14 +84,7 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
     port18010: relayListeners,
     minerAlive,
     controlConnected: Boolean(control?.connected),
-    badChecks: bad ? ((sameSession ? (previous.badChecks ?? 0) : 0) + 1) : 0,
-    lastRestartAt: previous.lastRestartAt ?? null,
-    restartHistory: previous.restartHistory ?? [],
-    recoveryNote: orphanedWorkers.size > 0
-      ? `发现 ${orphanedWorkers.size} 个残留 IOTA main_pool 进程;确认 App 已退出后,守护会先清理再启动`
-      : evidence.p2pRestartRecommended ? '日志检测到相邻层 P2P 节点缺失;建议彻底退出 IOTA 并使用 ma start 重启' : null,
     agentStartedAt,
-    totalRestarts,
   }
   return { state, rows }
 }
@@ -102,8 +96,6 @@ function display(state: Partial<GuardianState>): void {
   if (state.relayPid !== undefined) console.log('本地中继:', state.relayPid ? `运行中（PID ${state.relayPid}）` : '未运行')
   if (state.port18010?.length) console.log('18010 端口监听:', state.port18010.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(ma 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
   if (state.queueUpdatedAt) console.log('队列更新时间:', clockString(state.queueUpdatedAt))
-  if (state.lastRestartAt) console.log('最近自动重启:', clockString(state.lastRestartAt))
-  if (state.recoveryNote) console.log('恢复说明:', state.recoveryNote)
 
 }
 
@@ -112,33 +104,53 @@ async function runGuardian(once: boolean): Promise<void> {
   acquireLock()
   const previous = await readState<GuardianState>()
   const agentStartedAt = previous.agentStartedAt ?? Date.now() / 1000
-  let totalRestarts = previous.totalRestarts ?? 0
-  if (!once) await event('守护启动:每三十秒检查;连续三次异常才重启;十五分钟退避;每小时最多三次')
+  if (!once) await event('守护启动：每 30 秒检查 IOTA 进程、控制连接和日志；异常只发飞书告警，不自动重启。')
 
   while (true) {
     try {
-      const { state, rows } = await poll(previous, agentStartedAt, totalRestarts)
-      const action = decision(state, Date.now() / 1000)
-      state.recoveryNote = action === null || action === 'restart' ? null : action
-      if (!once && action === 'restart') {
-        const now = Date.now() / 1000
-        state.lastRestartAt = now
-        state.restartHistory = state.restartHistory.filter((t) => now - t < 3600).concat(now)
-        state.badChecks = 0
-        totalRestarts += 1
-        state.totalRestarts = totalRestarts
-        await saveState(state) // 先持久化限流计数,再做任何变更操作
-        await event(`自动重启:${state.description}`)
-        try {
-          await terminateIota(rows)
-          await startOptimized()
-          state.recoveryNote = '已通过优化启动器重新启动,等待矿工就绪'
-        } catch (error) {
-          state.recoveryNote = `重启未完成:${error instanceof Error ? error.message : String(error)}`
-          await event(state.recoveryNote)
+      const { state } = await poll(previous, agentStartedAt)
+      if (!once) {
+        const activeAlerts: Array<{ key: string; message: string }> = []
+        if (state.status === 'abnormal' || state.fatal) {
+          const key = `health:${state.sessionStartedAt}:${state.description}`
+          activeAlerts.push({ key, message: `IOTA 异常告警：${state.description}。未自动重启，请检查后决定是否通过飞书手动「重启」。` })
         }
+        if (state.p2pAnomalyDetected) {
+          const key = `p2p:${state.sessionStartedAt}`
+          activeAlerts.push({ key, message: `IOTA P2P 异常告警：${state.description}。请检查后决定是否通过飞书手动「重启」。` })
+        }
+        if ((state.orphanedWorkerCount ?? 0) > 0) {
+          const key = `orphaned-workers:${state.orphanedWorkerCount}`
+          activeAlerts.push({ key, message: `IOTA 残留进程告警：检测到 ${state.orphanedWorkerCount} 个 main_pool 进程，主程序当前未运行。未自动重启；请检查后决定是否手动处理。` })
+        }
+        const alertStatePath = `${LOCK_PATH}.alerts.json`
+        let previouslyActive = new Set<string>()
+        try { previouslyActive = new Set(JSON.parse(readFileSync(alertStatePath, 'utf8')) as string[]) } catch {}
+        const activeKeys = new Set(activeAlerts.map((alert) => alert.key))
+        const newlyActive = activeAlerts.filter((alert) => !previouslyActive.has(alert.key))
+        if (newlyActive.length) {
+          const feishu = await loadFeishuConfig()
+          if (feishu?.chatId && feishu.allowedOpenIds.length > 0) {
+            for (const alert of newlyActive) {
+              try {
+                await fanoutAgentAlert(feishu, await loadAgentConfig(), alert.message)
+                await event(`异常告警已发送（仅告警，不自动重启）：${alert.key}；${state.description}`)
+                previouslyActive.add(alert.key)
+              } catch (error) {
+                await event(`飞书异常告警发送失败：${alert.key}；${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+          } else {
+            await event(`异常告警未发送：飞书未配置；${newlyActive.map((alert) => alert.key).join(',')}`)
+            // Avoid writing the same missing-configuration diagnostic every 30 seconds.
+            for (const alert of newlyActive) previouslyActive.add(alert.key)
+          }
+        }
+        // Persist only currently active incidents: recovery clears dedupe, so a later recurrence alerts again.
+        const stillActive = [...previouslyActive].filter((key) => activeKeys.has(key))
+        writeFileSync(alertStatePath, JSON.stringify(stillActive.slice(-100), null, 2) + '\n')
       }
-      if (state.status !== previous.status || state.queuePosition !== previous.queuePosition || state.p2pRestartRecommended !== previous.p2pRestartRecommended) {
+      if (state.status !== previous.status || state.queuePosition !== previous.queuePosition || state.p2pAnomalyDetected !== previous.p2pAnomalyDetected) {
         await event(state.description)
       }
       await saveState(state)
@@ -168,6 +180,7 @@ async function main(): Promise<void> {
       break
     }
     case 'stop': {
+      const { terminateIota } = await import('./guardian.js')
       await terminateIota(await processes())
       console.log('IOTA 与 main_pool 已停止；守护和飞书机器人服务继续运行。')
       break
@@ -214,6 +227,31 @@ async function main(): Promise<void> {
         await atomicWriteJson(join(homedir(), '.miner-agent', 'feishu.json'), config)
         console.log(`已选择 Miner ID：${config.minerId}`)
       } else fail('用法: ma miner list | select <序号>')
+      break
+    }
+    case 'alert': {
+      const action = args[0]
+      const targets = args.slice(1)
+      const config = await loadAgentConfig()
+      if (action === 'add') {
+        if (targets.length !== 1 || !/^oc_[A-Za-z0-9]+$/.test(targets[0]!)) fail('用法: ma alert add <飞书群 chat_id>')
+        const list = config.alertDestinations ?? []
+        if (!list.some((item) => item.chatId === targets[0])) list.push({ chatId: targets[0]!, enabled: true })
+        config.alertDestinations = list
+        const { atomicWriteJson } = await import('./fsutil.js')
+        await atomicWriteJson(join(homedir(), '.miner-agent', 'config.json'), config)
+        console.log(`已添加告警群 ${targets[0]}；异常消息会推送到该群和已配对机器人私聊。`)
+      } else if (action === 'list') {
+        const destinations = config.alertDestinations ?? []
+        if (!destinations.length) console.log('尚未配置额外告警群。使用 ma alert add <chat_id> 添加。')
+        else destinations.forEach((target, index) => console.log(`${index + 1}. ${target.chatId} (${target.enabled === false ? '已停用' : '启用'})`))
+      } else if (action === 'remove') {
+        if (targets.length !== 1) fail('用法: ma alert remove <飞书群 chat_id>')
+        config.alertDestinations = (config.alertDestinations ?? []).filter((item) => item.chatId !== targets[0])
+        const { atomicWriteJson } = await import('./fsutil.js')
+        await atomicWriteJson(join(homedir(), '.miner-agent', 'config.json'), config)
+        console.log(`已移除告警群 ${targets[0]}。`)
+      } else fail('用法: ma alert add <chat_id> | list | remove <chat_id>')
       break
     }
     case 'feishu': {

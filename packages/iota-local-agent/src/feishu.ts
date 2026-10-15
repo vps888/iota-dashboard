@@ -3,19 +3,19 @@ import { readFile, readdir, stat, mkdir, chmod, writeFile } from 'node:fs/promis
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { appInstalled, startOptimized } from './launcher.js'
+import { CONFIG_PATH } from './paths.js'
 import { createOfficialClient } from './official.js'
-
 import { appExecutablePath, classify, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
 import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
-import { AGENT_DIR, PROCESS_MONITOR_STATE_PATH } from './paths.js'
+import { AGENT_DIR, PROCESS_MONITOR_STATE_PATH, SPEEDTEST_ALERT_STATE_PATH } from './paths.js'
 import { installFeishuLaunchAgent } from './launchagent.js'
 import { validateMinerId } from './ss58.js'
 import { detectLocalMinerIds, type LocalMinerIdentity } from './identity.js'
+import { fanoutAgentAlert, loadAgentConfig, type AgentConfig } from './feishu-alert.js'
 
-export interface FeishuCredentials { appId: string; appSecret: string; chatId: string; minerId: string; allowedOpenIds: string[]; speedtestRecoveryEnabled?: boolean; processAlertsEnabled?: boolean }
+export interface FeishuCredentials extends AgentConfig { appId: string; appSecret: string; chatId: string; minerId: string; allowedOpenIds: string[]; processAlertsEnabled?: boolean }
 const FEISHU_CONFIG_PATH = join(homedir(), '.miner-agent', 'feishu.json')
-const LOW_SPEED = 1
 
 
 export async function loadFeishuConfig(): Promise<FeishuCredentials | null> {
@@ -34,7 +34,10 @@ export async function configureFeishuCredentials(appId: string, appSecret: strin
   const current = await loadFeishuConfig()
   const unique = detection.identities
   const selected = unique.find((identity) => identity.minerId === current?.minerId) ?? unique.find((identity) => identity.minerId === detection.recommendedMinerId) ?? unique[0]!
-  const next: FeishuCredentials = { appId: appId.trim(), appSecret: appSecret.trim(), minerId: selected.minerId, chatId: current?.chatId ?? '', allowedOpenIds: current?.allowedOpenIds ?? [], speedtestRecoveryEnabled: current?.speedtestRecoveryEnabled ?? true }
+  const next: FeishuCredentials = {
+    appId: appId.trim(), appSecret: appSecret.trim(), minerId: selected.minerId,
+    chatId: current?.chatId ?? '', allowedOpenIds: current?.allowedOpenIds ?? [],
+  }
   await writeFile(FEISHU_CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
   await chmod(FEISHU_CONFIG_PATH, 0o600)
   return unique
@@ -51,68 +54,7 @@ export async function pairFeishuChat(chatId: string, allowedOpenIds: string[]): 
 }
 
 
-interface RecoveryState { lastSpeedtestAt: number; consecutiveLow: number; restarts: number; alerted: boolean }
-const RECOVERY_STATE_PATH = join(AGENT_DIR, 'recovery.json')
-async function readRecoveryState(): Promise<RecoveryState> {
-  try { return JSON.parse(await readFile(RECOVERY_STATE_PATH, 'utf8')) as RecoveryState }
-  catch { return { lastSpeedtestAt: 0, consecutiveLow: 0, restarts: 0, alerted: false } }
-}
-async function writeRecoveryState(value: RecoveryState): Promise<void> {
-  await writeFile(RECOVERY_STATE_PATH, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
-  await chmod(RECOVERY_STATE_PATH, 0o600)
-}
-async function newestCliLog(): Promise<string | null> {
-  const files = (await readdir(join(homedir(), 'Library', 'Logs', 'IOTA Train at Home')).catch(() => []))
-    .filter((name) => name.includes('-cli') && name.endsWith('.log'))
-  const items = await Promise.all(files.map(async (name) => ({ path: join(homedir(), 'Library', 'Logs', 'IOTA Train at Home', name), mtime: (await stat(join(homedir(), 'Library', 'Logs', 'IOTA Train at Home', name)).catch(() => null))?.mtimeMs ?? 0 })))
-  return items.sort((a, b) => b.mtime - a.mtime)[0]?.path ?? null
-}
-async function latestSpeedtest(after: number): Promise<{ at: number; download: number; upload: number } | null> {
-  const path = await newestCliLog()
-  if (!path) return null
-  const text = await readFile(path, 'utf8').catch(() => '')
-  const results: { at: number; download: number; upload: number }[] = []
-  for (const line of text.split('\n')) {
-    const match = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\].*Speedtest completed with results:.*['\"]download_mbps['\"]:\s*([0-9.]+).*['\"]upload_mbps['\"]:\s*([0-9.]+)/.exec(line)
-    if (!match) continue
-    const at = Date.parse(match[1]!) / 1000
-    if (at > after) results.push({ at, download: Number(match[2]), upload: Number(match[3]) })
-  }
-  return results.sort((a, b) => b.at - a.at)[0] ?? null
-}
-async function checkSpeedtestRecovery(client: Client, config: FeishuCredentials): Promise<void> {
-  const state = await readRecoveryState()
-  if (Date.now() / 1000 - state.lastSpeedtestAt < 10 * 60) return
-  const result = await latestSpeedtest(state.lastSpeedtestAt)
-  if (!result) return
-  state.lastSpeedtestAt = result.at
-  const low = result.download < 1 && result.upload < 1
-  if (!low) { state.consecutiveLow = 0; state.restarts = 0; state.alerted = false; await writeRecoveryState(state); return }
-  state.consecutiveLow += 1
-  await event(`测速低于阈值：下载 ${result.download} Mbps，上传 ${result.upload} Mbps（连续 ${state.consecutiveLow} 次）`)
-  if (state.restarts < 3) {
-    state.restarts += 1
-    await writeRecoveryState(state)
-    await event(`测速低速自动恢复：第 ${state.restarts}/3 次重启`)
-    try {
-      const appCount = await terminateIotaAppNow()
-      await event(`测速低速自动恢复：已结束 ${appCount} 个 IOTA 主程序，等待 3 秒`)
-      await new Promise((resolve) => setTimeout(resolve, 3000))
-      const workerCount = await killIotaWorkersNow()
-      await event(`测速低速自动恢复：已向 ${workerCount} 个 main_pool 发送结束信号，等待 5 秒`)
-      await new Promise((resolve) => setTimeout(resolve, 5000))
-      await startOptimized()
-      await event('测速低速恢复重启请求已提交')
-    } catch (error) { await event(`测速低速恢复失败：${error instanceof Error ? error.message : String(error)}`) }
-    return
-  }
-  if (!state.alerted) {
-    state.alerted = true
-    await writeRecoveryState(state)
-    await sendText(client, config.chatId, `IOTA 网络测速告警：连续低速且自动重启 3 次后仍未恢复。最新下载 ${num(result.download, 2)} Mbps，上传 ${num(result.upload, 2)} Mbps。`)
-    await event('低速告警已通过飞书机器人发送')
-  }
-}
+let manualRestartInProgress = false
 
 interface PersistedIotaSnapshot {
   appPid: number | null
@@ -131,6 +73,31 @@ export function endedIotaProcesses(
   }
 }
 
+async function monitorSpeedtest(client: Client, config: FeishuCredentials): Promise<void> {
+  let lastProcessedAt = 0
+  try {
+    const saved = JSON.parse(await readFile(SPEEDTEST_ALERT_STATE_PATH, 'utf8')) as { lastProcessedAt?: number }
+    lastProcessedAt = saved.lastProcessedAt ?? 0
+  } catch {}
+  const matches = (await logRecords()).flatMap((record) => {
+    const match = /Speedtest completed with results:.*['\"]download_mbps['\"]:\s*([0-9.]+).*['\"]upload_mbps['\"]:\s*([0-9.]+)/.exec(record.line)
+    if (!match || record.t <= lastProcessedAt) return []
+    return [{ at: record.t, download: Number(match[1]), upload: Number(match[2]) }]
+  }).sort((a, b) => a.at - b.at)
+  if (!matches.length) return
+  const latest = matches[matches.length - 1]!
+  if (latest.download < 1 && latest.upload < 1) {
+    const alert = `IOTA 网络测速异常：下载 ${num(latest.download, 2)} Mbps，上传 ${num(latest.upload, 2)} Mbps。未自动重启，请检查后决定是否通过飞书手动「重启」。\n测速时间：${date(latest.at)}\n${updatedAt()}`
+    await fanoutAgentAlert(config, await loadAgentConfig(), alert)
+    await event(`低速测速告警已发送：at=${latest.at} download=${latest.download}Mbps upload=${latest.upload}Mbps；仅告警，不自动重启`)
+  } else if (latest.download < 1 || latest.upload < 1) {
+    await event(`测速单项低于 1 Mbps，未满足双向低速告警条件：at=${latest.at} download=${latest.download}Mbps upload=${latest.upload}Mbps`)
+  }
+  await mkdir(dirname(SPEEDTEST_ALERT_STATE_PATH), { recursive: true })
+  await writeFile(SPEEDTEST_ALERT_STATE_PATH, JSON.stringify({ lastProcessedAt: latest.at }, null, 2) + '\n', { mode: 0o600 })
+  await chmod(SPEEDTEST_ALERT_STATE_PATH, 0o600)
+}
+
 async function monitorIotaProcesses(client: Client, config: FeishuCredentials): Promise<void> {
   const current = await iotaProcessSnapshot()
   let previous: PersistedIotaSnapshot | null = null
@@ -143,19 +110,29 @@ async function monitorIotaProcesses(client: Client, config: FeishuCredentials): 
     observedAt: current.capturedAt,
   }
   // First sample establishes baseline; don't report processes that predate monitor startup.
+  let alertDeliveryFailed = false
   if (previous?.initialized) {
     const changes = endedIotaProcesses(previous, current)
     const parts: string[] = []
     if (changes.appEnded) parts.push(`IOTA 主程序 PID ${previous.appPid} 已结束`)
     if (changes.appReplaced) parts.push(`IOTA 主程序已更换（PID ${previous.appPid} → ${current.appPid}）`)
     if (changes.endedWorkers.length) parts.push(`${changes.endedWorkers.length} 个 main_pool 进程已结束：${changes.endedWorkers.map((row) => `PID ${row.pid}`).join(', ')}`)
-    if (parts.length && config.processAlertsEnabled !== false) {
-      await sendText(client, config.chatId, `IOTA 进程状态变化：${parts.join('；')}。当前主程序 ${current.appPid === null ? '未运行' : `PID ${current.appPid}`}，main_pool ${current.workerCount} 个。\n${updatedAt()}`)
-      await event(`飞书进程告警已发送：${parts.join('；')}`)
+    if (parts.length && config.processAlertsEnabled !== false && !manualRestartInProgress) {
+      const alertText = `IOTA 进程状态变化：${parts.join('；')}。当前主程序 ${current.appPid === null ? '未运行' : `PID ${current.appPid}`}，main_pool ${current.workerCount} 个。\n${updatedAt()}`
+      try {
+        await fanoutAgentAlert(config, await loadAgentConfig(), alertText)
+        await event(`IOTA 进程告警已发送：${parts.join('；')}`)
+      } catch (error) {
+        alertDeliveryFailed = true
+        await event(`IOTA 进程告警发送失败：${parts.join('；')}；${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
-  await writeFile(PROCESS_MONITOR_STATE_PATH, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
-  await chmod(PROCESS_MONITOR_STATE_PATH, 0o600)
+  // Keep the old baseline if delivery fails; the next 30-second poll retries the same alert.
+  if (!alertDeliveryFailed) {
+    await writeFile(PROCESS_MONITOR_STATE_PATH, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+    await chmod(PROCESS_MONITOR_STATE_PATH, 0o600)
+  }
 }
 
 function date(ts: number | null | undefined): string {
@@ -275,33 +252,30 @@ async function earningsText(minerId: string): Promise<string> {
   ].join('\n')
 }
 
-async function restartAndReport(): Promise<string> {
+async function restartAndReport(traceText: string): Promise<string> {
+  manualRestartInProgress = true
   const result = async (text: string): Promise<string> => `${text}\n${updatedAt()}`
-  if (!appInstalled()) return result('重启失败：未找到 IOTA Train at Home.app。')
-  let appStartedAt = Date.now() / 1000
+  if (!appInstalled()) { manualRestartInProgress = false; return result('重启失败：未找到 IOTA Train at Home.app。') }
+  const before = Date.now() / 1000
   try {
     const appCount = await terminateIotaAppNow()
-    await event(`飞书手动重启：已结束 ${appCount} 个 IOTA 主进程，等待 3 秒`)
+    await event(`飞书手动重启阶段完成：${traceText}；已结束 ${appCount} 个 IOTA 主进程，等待 3 秒`)
     await new Promise((resolve) => setTimeout(resolve, 3000))
     const workerCount = await killIotaWorkersNow()
-    await event(`飞书手动重启：已 pkill ${workerCount} 个 main_pool 相关进程，等待 5 秒`)
+    await event(`飞书手动重启阶段完成：${traceText}；已结束 ${workerCount} 个 main_pool 相关进程，等待 5 秒`)
     await new Promise((resolve) => setTimeout(resolve, 5000))
+    await event(`飞书手动重启启动阶段开始：${traceText}`)
     await startOptimized()
-    const deadline = Date.now() + 120_000
-    let appFound = false
-    while (Date.now() < deadline) {
-      const current = await processes().catch(() => new Map())
-      if ([...current.values()].some((row) => row.command === appExecutablePath())) { appFound = true; appStartedAt = Date.now() / 1000; break }
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-    }
-    if (!appFound) return result('重启失败：启动后 2 分钟内未检测到 IOTA 进程。')
+    await event(`飞书手动重启启动阶段成功：${traceText}`)
   } catch (error) {
+    await event(`飞书手动重启失败：${traceText}；${error instanceof Error ? error.message : String(error)}`)
+    manualRestartInProgress = false
     return result(`重启失败：${error instanceof Error ? error.message : String(error)}`)
   }
-  const speed = await waitForSpeedtest(appStartedAt, 15 * 60_000)
-  if (!speed) return result('IOTA 进程已启动；等待测速结果超时（15 分钟），请查看本机 IOTA 日志。')
-  const low = speed.download < LOW_SPEED && speed.upload < LOW_SPEED
-  return result(`重启成功；测速时间 ${date(speed.at)}，下载 ${num(speed.download, 2)} Mbps，上传 ${num(speed.upload, 2)} Mbps。${low ? '测速仍低于 1 Mbps。' : ''}`)
+  const speed = await waitForSpeedtest(before, 15 * 60_000)
+  manualRestartInProgress = false
+  if (!speed) return result('重启请求已提交，但 15 分钟内没有检测到新测速结果；请用 ma status 检查 IOTA 进程。')
+  return result(`重启完成；测速时间 ${date(speed.at)}，下载 ${num(speed.download, 2)} Mbps，上传 ${num(speed.upload, 2)} Mbps。`)
 }
 
 async function waitForSpeedtest(after: number, timeout: number): Promise<{ at: number; download: number; upload: number } | null> {
@@ -389,7 +363,7 @@ export async function runFeishuBot(minerId: string): Promise<void> {
       await event(`添加命令已读表情失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  async function handleCommand(sender: string, command: string, messageId: string): Promise<void> {
+  async function handleCommand(sender: string, command: string, messageId: string, trace: { eventId?: string; chatId?: string; chatType?: string; source: string }): Promise<void> {
     const now = Date.now()
     for (const [seen, expiry] of handled) if (expiry <= now) handled.delete(seen)
     if (command !== 'status' && command !== 'restart' && command !== 'earnings') return
@@ -398,12 +372,18 @@ export async function runFeishuBot(minerId: string): Promise<void> {
     if (handled.has(key) || inFlight.has(key)) return
     handled.set(key, now + 60_000)
     inFlight.add(key)
+    const traceText = `来源=${trace.source} event_id=${trace.eventId ?? '—'} message_id=${messageId || '—'} sender.open_id=${sender} chat_id=${trace.chatId ?? botConfig.chatId} chat_type=${trace.chatType ?? '—'} command=${command}`
+    await event(`飞书命令收到：${traceText}`)
     await markAcknowledged(messageId)
+    await event(`飞书命令已读确认：${traceText}`)
     try {
-      const result = command === 'status' ? await statusText(minerId) : command === 'restart' ? await restartAndReport() : await earningsText(minerId)
+      const result = command === 'status' ? await statusText(minerId) : command === 'restart' ? await restartAndReport(traceText) : await earningsText(minerId)
+      await event(`飞书命令执行成功：${traceText}`)
       await sendText(client, botConfig.chatId, result)
     } catch (error) {
-      await sendText(client, botConfig.chatId, `命令执行失败：${error instanceof Error ? error.message : String(error)}`)
+      const reason = error instanceof Error ? error.message : String(error)
+      await event(`飞书命令执行失败：${traceText} error=${reason}`)
+      await sendText(client, botConfig.chatId, `命令执行失败：${reason}`)
     } finally {
       inFlight.delete(key)
     }
@@ -416,14 +396,14 @@ export async function runFeishuBot(minerId: string): Promise<void> {
       let text = ''
       try { text = String((JSON.parse(data.message.content) as { text?: string }).text ?? '').trim() } catch { return }
       const command = text === '状态' ? 'status' : text === '重启' ? 'restart' : text === '收益' ? 'earnings' : ''
-      if (command) await handleCommand(sender, command, data.message.message_id)
+      if (command) await handleCommand(sender, command, data.message.message_id, { source: 'message', eventId: data.event_id ?? '', chatId: data.message.chat_id, chatType: data.message.chat_type })
     },
     'card.action.trigger': async (evt: CardActionEvent) => {
       if (!allowed.has(evt.operator.openId) || evt.chatId !== botConfig.chatId) return
       const action = (evt.action.value as { command?: string } | undefined)?.command
       const command = action === 'status' || action === 'restart' || action === 'earnings' ? action : ''
       if (command) {
-        await handleCommand(evt.operator.openId, command, evt.messageId)
+        await handleCommand(evt.operator.openId, command, evt.messageId, { source: 'card', eventId: String((evt.raw as { header?: { event_id?: string }; event_id?: string } | undefined)?.header?.event_id ?? (evt.raw as { event_id?: string } | undefined)?.event_id ?? ''), chatId: evt.chatId, chatType: 'card_action' })
       }
     },
   })
@@ -433,10 +413,11 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   await sendText(client, botConfig.chatId, 'IOTA ma 已连接。可发送：状态、重启、收益。')
   console.log(`ma Feishu bot connected; target chat ${botConfig.chatId}`)
   while (true) {
-    try { await monitorIotaProcesses(client, config) }
+    try {
+      const agentConfig = await loadAgentConfig()
+      await monitorIotaProcesses(client, { ...config, ...agentConfig })
+    }
     catch (error) { await event(`IOTA 进程监控失败：${error instanceof Error ? error.message : String(error)}`) }
-    try { if (config.speedtestRecoveryEnabled !== false) await checkSpeedtestRecovery(client, config) }
-    catch (error) { await event(`测速恢复监控失败：${error instanceof Error ? error.message : String(error)}`) }
     await new Promise((resolve) => setTimeout(resolve, 30_000))
   }
 }
