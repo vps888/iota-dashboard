@@ -39,7 +39,7 @@ npm publish --workspace=miner-agent --access public --auth-type=web
 
 printf '\n==> Wait for npm registry propagation and verify package metadata\n'
 MAX_ATTEMPTS=60
-SLEEP_SECONDS=5
+SLEEP_SECONDS=10
 PACKAGE_METADATA=""
 for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
   if PACKAGE_METADATA="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.tarball bin --json --registry=https://registry.npmjs.org/ 2>/dev/null)" \
