@@ -83,9 +83,9 @@ npm exec --workspace=iota-local-agent -- miner-agent start
 npm exec --workspace=iota-local-agent -- miner-agent status
 ```
 
-### 自动发布 miner-agent
+### 手动发布 miner-agent
 
-推送涉及 `packages/iota-local-agent/**` 的提交到 `main` 后,GitHub Actions 会构建并测试该包,再使用 OIDC Trusted Publishing 发布到 npm 并生成 provenance。每次发布前需递增 `packages/iota-local-agent/package.json` 的版本号。首次启用前,在 npm 包 `miner-agent` 的 Trusted Publishers 设置中添加 GitHub Actions publisher,仓库设为 `vps888/iota-dashboard`,工作流文件设为 `miner-agent-publish.yml`;无需保存 npm 发布 token。该 workflow 的 pull request 触发只运行测试,不会发布。
+GitHub Actions 不负责向 npm 发布。完成 npm 登录后，在仓库根目录运行 `scripts/publish-miner-agent.sh`；脚本会检查版本、构建、测试并通过浏览器登录流程发布。发布前先递增 `packages/iota-local-agent/package.json` 的版本号。
 
 ### 启用状态上报
 
