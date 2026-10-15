@@ -249,7 +249,7 @@ export function classify(
     }
   }
   if (!appPid) {
-    return { status: 'abnormal', description: 'IOTA 主程序不在运行', bad: true }
+    return { status: 'paused', description: 'IOTA 当前未运行；运行 miner-agent start 启动', bad: false }
   }
   if (!minerAlive) {
     return { status: 'abnormal', description: '矿工进程已退出', bad: true }
@@ -272,21 +272,6 @@ export function classify(
     return { status: 'abnormal', description: '矿工三十分钟没有任何活动,且未处于排队状态', bad: true }
   }
   return { status: 'waiting', description: '控制连接正常,等待注册、模型准备或训练任务', bad: false }
-}
-
-export interface NoidControlState {
-  enabled: boolean
-  mode: 'training' | 'default' | 'disabled' | 'unmanaged' | 'error'
-  running: boolean | null
-  cpuDuty: number | null
-  gpuDuty: number | null
-  cpuRate: number | null
-  gpuRate: number | null
-  accepted: number | null
-  rejected: number | null
-  stale: number | null
-  error: string | null
-  updatedAt: string
 }
 
 export interface GuardianState {
@@ -314,7 +299,6 @@ export interface GuardianState {
   recoveryNote: string | null
   agentStartedAt: number
   totalRestarts: number
-  noidControl?: NoidControlState | null
 }
 
 export function decision(state: GuardianState, now: number): 'restart' | string | null {

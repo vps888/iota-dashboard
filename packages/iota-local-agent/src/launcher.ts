@@ -3,7 +3,10 @@ import net from 'node:net'
 import { open, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { RELAY_LOG_PATH, LAUNCH_LOG_PATH, RELAY_PID_PATH } from './paths.js'
+import { AGENT_DIR } from './paths.js'
+const RELAY_LOG_PATH = `${AGENT_DIR}/relay.log`
+const LAUNCH_LOG_PATH = `${AGENT_DIR}/optimized-launch.log`
+const RELAY_PID_PATH = `${AGENT_DIR}/relay.pid`
 import { appExecutablePath, execFileText, processes, terminateOrphanedIotaWorkers } from './guardian.js'
 import { RELAY_PORT } from './relay.js'
 
@@ -74,6 +77,7 @@ export async function startOptimized(): Promise<void> {
   }
 
   const env: Record<string, string | undefined> = { ...process.env, MACROCOSMOS_WS_URL: `ws://127.0.0.1:${RELAY_PORT}/ws` }
+  for (const key of ['http_proxy', 'https_proxy', 'all_proxy', 'ftp_proxy', 'rsync_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'FTP_PROXY', 'RSYNC_PROXY', 'GIT_PROXY_COMMAND', 'npm_config_proxy', 'NPM_CONFIG_PROXY']) delete env[key]
   // 保留官方默认线程设置:限制线程数的实验未能修复启动问题
   for (const key of THREAD_ENV_KEYS) delete env[key]
   const log = await open(LAUNCH_LOG_PATH, 'a')

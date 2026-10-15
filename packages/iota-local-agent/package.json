@@ -1,7 +1,7 @@
 {
   "name": "miner-agent",
-  "version": "0.1.2",
-  "description": "Local guardian and status reporter for IOTA Train at Home miners",
+  "version": "0.2.0",
+  "description": "Local IOTA Train at Home guardian with Feishu remote control",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -25,9 +25,9 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.75.0",
     "@noble/hashes": "^2.4.0",
-    "@scure/base": "^2.4.0",
-    "zod": "^3.25.76"
+    "@scure/base": "^2.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.16.5",
