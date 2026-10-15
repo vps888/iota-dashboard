@@ -387,6 +387,27 @@ export async function terminateIotaWorkersNow(): Promise<number> {
   return terminateMatchingNow((row) => isIotaWorker(row, worker))
 }
 
+// 强制结束经过校验的 IOTA main_pool 及其 worker 子进程，等价于针对其 PID 集合执行 pkill。
+export async function killIotaWorkersNow(): Promise<number> {
+  const worker = workerExecutablePath()
+  const snapshot = await processes()
+  const targets = [...snapshot].filter(([, row]) => isIotaWorker(row, worker))
+  const fresh = await processes()
+  let killed = 0
+  for (const [pid, row] of targets) {
+    if (fresh.get(pid)?.command !== row.command) continue
+    await signal(pid, 'SIGKILL')
+    killed += 1
+  }
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    const current = await processes()
+    if (!targets.some(([pid, row]) => current.get(pid)?.command === row.command)) return killed
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error('main_pool 进程未能全部结束')
+}
+
 // App 已退出时清理所有可确认属于它的 main_pool 及其 multiprocessing 子进程。
 export async function terminateOrphanedIotaWorkers(rows: Map<number, ProcessRow>): Promise<number> {
   const orphans = orphanedIotaWorkers(rows)

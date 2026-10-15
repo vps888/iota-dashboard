@@ -6,7 +6,7 @@ import { appInstalled, startOptimized } from './launcher.js'
 import { createOfficialClient } from './official.js'
 
 import { appExecutablePath, classify, health, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
-import { terminateIotaAppNow, terminateIotaWorkersNow } from './guardian.js'
+import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
 import { AGENT_DIR } from './paths.js'
 import { installFeishuLaunchAgent } from './launchagent.js'
@@ -98,7 +98,7 @@ async function checkSpeedtestRecovery(client: Client, config: FeishuCredentials)
       const appCount = await terminateIotaAppNow()
       await event(`测速低速自动恢复：已结束 ${appCount} 个 IOTA 主程序，等待 3 秒`)
       await new Promise((resolve) => setTimeout(resolve, 3000))
-      const workerCount = await terminateIotaWorkersNow()
+      const workerCount = await killIotaWorkersNow()
       await event(`测速低速自动恢复：已向 ${workerCount} 个 main_pool 发送结束信号，等待 5 秒`)
       await new Promise((resolve) => setTimeout(resolve, 5000))
       await startOptimized()
@@ -234,10 +234,10 @@ async function restartAndReport(): Promise<string> {
   let appStartedAt = Date.now() / 1000
   try {
     const appCount = await terminateIotaAppNow()
-    await event(`飞书手动重启：已结束 ${appCount} 个 IOTA 主程序，等待 3 秒`)
+    await event(`飞书手动重启：已结束 ${appCount} 个 IOTA 主进程，等待 3 秒`)
     await new Promise((resolve) => setTimeout(resolve, 3000))
-    const workerCount = await terminateIotaWorkersNow()
-    await event(`飞书手动重启：已向 ${workerCount} 个 main_pool 进程发送结束信号，等待 5 秒`)
+    const workerCount = await killIotaWorkersNow()
+    await event(`飞书手动重启：已 pkill ${workerCount} 个 main_pool 相关进程，等待 5 秒`)
     await new Promise((resolve) => setTimeout(resolve, 5000))
     await startOptimized()
     const deadline = Date.now() + 120_000
@@ -298,17 +298,6 @@ async function sendText(client: Client, chatId: string, text: string): Promise<v
   if (chunk) await client.im.v1.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: chunk.trim() }) } })
 }
 
-function controlCard() {
-  return {
-    schema: '2.0',
-    header: { title: { tag: 'plain_text', content: 'IOTA miner-agent 控制台' }, template: 'blue' },
-    body: { elements: [{ tag: 'action', actions: [
-      { tag: 'button', text: { tag: 'plain_text', content: '状态' }, type: 'primary', value: { command: 'status' } },
-      { tag: 'button', text: { tag: 'plain_text', content: '重启' }, type: 'danger', value: { command: 'restart' }, confirm: { title: { tag: 'plain_text', content: '确认重启 IOTA？' }, text: { tag: 'plain_text', content: '将结束 IOTA 及 main_pool，然后重新启动。' } } },
-      { tag: 'button', text: { tag: 'plain_text', content: '收益' }, value: { command: 'earnings' } },
-    ] }] },
-  }
-}
 
 export async function runFeishuDiscovery(): Promise<void> {
   const config = await loadFeishuConfig()
@@ -341,40 +330,61 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   const config = await loadFeishuConfig()
   if (!config) throw new Error(`飞书尚未配置。配置文件：${FEISHU_CONFIG_PATH}`)
   if (!config.chatId || config.allowedOpenIds.length === 0) throw new Error('飞书控制未完成配对：请配置 chat_id 和至少一个允许控制的 open_id。先运行 miner-agent feishu connect 完成配对。')
-  const client = new Client({ appId: config.appId, appSecret: config.appSecret, domain: 'https://open.feishu.cn' })
-  const allowed = new Set(config.allowedOpenIds)
+  const botConfig = config
+  const client = new Client({ appId: botConfig.appId, appSecret: botConfig.appSecret, domain: 'https://open.feishu.cn' })
+  const allowed = new Set(botConfig.allowedOpenIds)
+  const handled = new Map<string, number>()
+  const inFlight = new Set<string>()
+  async function markAcknowledged(messageId: string): Promise<void> {
+    try {
+      await client.im.v1.messageReaction.create({ path: { message_id: messageId }, data: { reaction_type: { emoji_type: 'DONE' } } })
+    } catch (error) {
+      await event(`添加命令已读表情失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  async function handleCommand(sender: string, command: string, messageId: string): Promise<void> {
+    const now = Date.now()
+    for (const [seen, expiry] of handled) if (expiry <= now) handled.delete(seen)
+    if (command !== 'status' && command !== 'restart' && command !== 'earnings') return
+    // Merge repeated commands from the same user for one minute, including duplicate delivery paths.
+    const key = `${botConfig.chatId}:${sender}:${command}`
+    if (handled.has(key) || inFlight.has(key)) return
+    handled.set(key, now + 60_000)
+    inFlight.add(key)
+    await markAcknowledged(messageId)
+    try {
+      const result = command === 'status' ? await statusText(minerId) : command === 'restart' ? await restartAndReport() : await earningsText(minerId)
+      await sendText(client, botConfig.chatId, result)
+    } catch (error) {
+      await sendText(client, botConfig.chatId, `命令执行失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      inFlight.delete(key)
+    }
+  }
+
   const dispatcher = new EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
       const sender = data.sender.sender_id?.open_id
-      if (!sender || !allowed.has(sender) || data.message.chat_id !== config.chatId || data.message.message_type !== 'text') return
+      if (!sender || !allowed.has(sender) || data.message.chat_id !== botConfig.chatId || data.message.message_type !== 'text') return
       let text = ''
       try { text = String((JSON.parse(data.message.content) as { text?: string }).text ?? '').trim() } catch { return }
-      try {
-        const acknowledgement = text === '状态' ? '正在查询状态…' : text === '重启' ? '已收到重启命令，正在重启 IOTA 并等待测速…' : text === '收益' ? '正在查询收益…' : ''
-        if (!acknowledgement) return
-        await sendText(client, config.chatId, `已收到「${text}」，${acknowledgement}`)
-        if (text === '状态') await sendText(client, config.chatId, await statusText(minerId))
-        else if (text === '重启') await sendText(client, config.chatId, await restartAndReport())
-        else if (text === '收益') await sendText(client, config.chatId, await earningsText(minerId))
-      } catch (error) { await sendText(client, config.chatId, `命令执行失败：${error instanceof Error ? error.message : String(error)}`) }
+      const command = text === '状态' ? 'status' : text === '重启' ? 'restart' : text === '收益' ? 'earnings' : ''
+      if (command) await handleCommand(sender, command, data.message.message_id)
     },
     'card.action.trigger': async (evt: CardActionEvent) => {
-      if (!allowed.has(evt.operator.openId) || evt.chatId !== config.chatId) return
+      if (!allowed.has(evt.operator.openId) || evt.chatId !== botConfig.chatId) return
       const action = (evt.action.value as { command?: string } | undefined)?.command
-      try {
-        const acknowledgement = action === 'status' ? '已收到「状态」，正在查询…' : action === 'restart' ? '已收到「重启」，正在重启 IOTA 并等待测速…' : action === 'earnings' ? '已收到「收益」，正在查询…' : ''
-        if (!acknowledgement) return
-        await sendText(client, config.chatId, acknowledgement)
-        const text = action === 'status' ? await statusText(minerId) : action === 'restart' ? await restartAndReport() : await earningsText(minerId)
-        await sendText(client, config.chatId, text)
-      } catch (error) { await sendText(client, config.chatId, `命令执行失败：${error instanceof Error ? error.message : String(error)}`) }
+      const command = action === 'status' || action === 'restart' || action === 'earnings' ? action : ''
+      if (command) {
+        await handleCommand(evt.operator.openId, command, evt.messageId)
+      }
     },
   })
   const ws = new WSClient({ appId: config.appId, appSecret: config.appSecret, domain: 'https://open.feishu.cn' })
   await ws.start({ eventDispatcher: dispatcher })
   await event('飞书机器人长连接已启动')
-  await sendText(client, config.chatId, 'IOTA miner-agent 已连接。可发送：状态、重启、收益。')
-  console.log(`miner-agent Feishu bot connected; target chat ${config.chatId}`)
+  await sendText(client, botConfig.chatId, 'IOTA miner-agent 已连接。可发送：状态、重启、收益。')
+  console.log(`miner-agent Feishu bot connected; target chat ${botConfig.chatId}`)
   while (true) {
     try { if (config.speedtestRecoveryEnabled !== false) await checkSpeedtestRecovery(client, config) }
     catch (error) { await event(`测速恢复监控失败：${error instanceof Error ? error.message : String(error)}`) }

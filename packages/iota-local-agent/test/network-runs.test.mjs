@@ -42,3 +42,18 @@ test('Feishu status output includes requested compact labels and blank separator
   }
   assert.match(source, /dateMinute\(record\.ts\).*relativeAge\(record\.ts\).*upload.*rank/s)
 })
+
+
+test('restart flow uses staged IOTA and main_pool shutdown, and commands are acknowledged and deduplicated', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
+  assert.match(source, /terminateIotaAppNow\(\)[\s\S]*setTimeout\(resolve, 3000\)[\s\S]*killIotaWorkersNow\(\)[\s\S]*setTimeout\(resolve, 5000\)[\s\S]*startOptimized\(\)/)
+  assert.match(source, /await markAcknowledged\(messageId\)[\s\S]*const result = command === 'status'/)
+  assert.doesNotMatch(source, /已收到「\$\{text\}」/)
+  assert.doesNotMatch(source, /正在处理…/)
+  assert.match(source, /const key = `\$\{botConfig\.chatId\}:\$\{sender\}:\$\{command\}`[\s\S]*if \(handled\.has\(key\) \\|\\| inFlight\.has\(key\)\) return/)
+  assert.match(source, /handled\.set\(key, now \+ 60_000\)/)
+  assert.match(source, /inFlight\.add\(key\)[\s\S]*inFlight\.delete\(key\)/)
+})
