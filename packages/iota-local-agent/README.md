@@ -20,7 +20,7 @@ miner-agent stop          # 停止 IOTA 与 main_pool，监控服务继续运行
 
 1. 在[飞书开放平台](https://open.feishu.cn/app)创建企业自建应用、启用机器人能力，并配置收发消息权限和 `im.message.receive_v1` 长连接事件。发布应用后才会生效；无需公网服务器或回调地址。
 2. Mac 上运行 `miner-agent feishu setup`，只输入 App ID 和 App Secret。Agent 会从本机 Bittensor 钱包公钥文件自动发现账户地址；不会打开无扩展名的私钥文件，也不读取私钥或助记词。若本机存在多个公钥，会优先采用与当前 IOTA 钱包日志匹配的账号，并显示选择结果。
-3. 只有本机确实检测到多个 Miner ID 时，才需要用 `miner-agent miner list` 查看并通过 `miner-agent miner select <序号>` 切换。随后运行 `miner-agent feishu connect`，在飞书里给机器人发任意单聊消息完成自动配对。配对后机器人服务会自动安装并启动。`miner-agent install` 设置守护与已配对机器人登录后自动启动；`start/stop/status` 用于日常 IOTA 操作。
+3. 只有本机确实检测到多个 Miner ID 时，才需要用 `miner-agent miner list` 查看并通过 `miner-agent miner select <序号>` 切换。随后运行 `miner-agent feishu connect`，在飞书里给机器人发任意单聊消息完成自动配对。配对后机器人服务会自动安装并启动。`miner-agent install` 设置守护与已配对机器人登录后自动启动；更新 npm 包后运行 `miner-agent feishu restart`，让飞书服务重新加载新版本。`start/stop/status` 用于日常 IOTA 操作。
 
 机器人命令：
 

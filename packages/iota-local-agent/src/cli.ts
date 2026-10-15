@@ -10,7 +10,7 @@ import {
   terminateIota, orphanedIotaWorkers, appExecutablePath, workerExecutablePath, type GuardianState,
 } from './guardian.js'
 import { startOptimized, appInstalled } from './launcher.js'
-import { installLaunchAgent, installFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
+import { installLaunchAgent, installFeishuLaunchAgent, stopFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
 import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
@@ -29,6 +29,7 @@ function usage(): void {
   miner-agent miner list           列出自动发现的本机 Miner ID
   miner-agent miner select <序号>  选择用于飞书查询的 Miner ID
   miner-agent feishu connect       自动配对飞书会话与当前用户
+  miner-agent feishu restart      重启飞书后台服务（重新加载当前安装版本）
   miner-agent feishu service       运行飞书机器人后台服务
 `)
 }
@@ -224,11 +225,18 @@ async function main(): Promise<void> {
         } finally { terminal.close() }
       } else if (action === 'connect') {
         await runFeishuDiscovery()
+      } else if (action === 'restart') {
+        const feishu = await loadFeishuConfig()
+        if (!feishu?.chatId || feishu.allowedOpenIds.length === 0) fail('飞书未完成配对；先运行 miner-agent feishu connect。')
+        await stopFeishuLaunchAgent()
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        await installFeishuLaunchAgent()
+        console.log('飞书后台服务已重启并重新加载当前 miner-agent 版本；IOTA 未重启。')
       } else if (action === 'service' || (action === 'run' && feishuArgs.includes('service'))) {
         const config = await loadFeishuConfig()
         if (!config) fail('请先运行 miner-agent feishu setup')
         await runFeishuBot(config.minerId)
-      } else fail('用法: miner-agent feishu setup | connect')
+      } else fail('用法: miner-agent feishu setup | connect | restart')
       break
     }
     default:

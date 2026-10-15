@@ -25,8 +25,15 @@ async function install(label: string, path: string, argv: string[], log: string)
   await writeFile(path, plist)
   await chmod(path, 0o644)
   await command('launchctl', ['bootout', `gui/${user}/${label}`])
-  const result = await command('launchctl', ['bootstrap', `gui/${user}`, path])
-  if (result.code !== 0 && !/service already loaded|already loaded/i.test(result.stderr)) throw new Error(`LaunchAgent 启动失败：${result.stderr.trim()}`)
+  let result = await command('launchctl', ['bootstrap', `gui/${user}`, path])
+  for (let attempt = 0; result.code !== 0 && attempt < 4; attempt += 1) {
+    if (/service already loaded|already loaded/i.test(result.stderr)) return
+    // launchd may briefly retain the previous job after bootout during an npm update.
+    if (!/Input\/output error|Bootstrap failed: 5/i.test(result.stderr)) break
+    await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)))
+    result = await command('launchctl', ['bootstrap', `gui/${user}`, path])
+  }
+  if (result.code !== 0) throw new Error(`LaunchAgent 启动失败：${result.stderr.trim()}`)
 }
 async function stop(label: string, path: string): Promise<void> {
   const user = uid()
