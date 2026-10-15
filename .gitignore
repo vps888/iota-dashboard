@@ -7,3 +7,6 @@ dist/
 tools/iota-local/runtime/.iota-guardian.lock
 tools/iota-local/runtime/IOTA状态.json
 tools/iota-local/runtime/IOTA守护日志.log
+
+# IDE project files
+.idea/
