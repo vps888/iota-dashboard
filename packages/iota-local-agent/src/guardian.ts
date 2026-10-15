@@ -363,6 +363,30 @@ export async function terminateIota(rows: Map<number, ProcessRow>): Promise<void
   await terminateTargets(targets, 'IOTA 进程未能退出,未启动重复实例')
 }
 
+// 发送一次 TERM；信号前重新核对 PID 命令行，避免 PID 复用误杀。
+async function terminateMatchingNow(select: (row: ProcessRow) => boolean): Promise<number> {
+  const snapshot = await processes()
+  const targets = [...snapshot].filter(([, row]) => select(row))
+  const fresh = await processes()
+  let signaled = 0
+  for (const [pid, row] of targets) {
+    if (fresh.get(pid)?.command !== row.command) continue
+    await signal(pid, 'SIGTERM')
+    signaled += 1
+  }
+  return signaled
+}
+
+export async function terminateIotaAppNow(): Promise<number> {
+  const app = appExecutablePath()
+  return terminateMatchingNow((row) => row.command === app)
+}
+
+export async function terminateIotaWorkersNow(): Promise<number> {
+  const worker = workerExecutablePath()
+  return terminateMatchingNow((row) => isIotaWorker(row, worker))
+}
+
 // App 已退出时清理所有可确认属于它的 main_pool 及其 multiprocessing 子进程。
 export async function terminateOrphanedIotaWorkers(rows: Map<number, ProcessRow>): Promise<number> {
   const orphans = orphanedIotaWorkers(rows)

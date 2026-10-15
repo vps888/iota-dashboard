@@ -6,7 +6,7 @@ import { appInstalled, startOptimized } from './launcher.js'
 import { createOfficialClient } from './official.js'
 
 import { appExecutablePath, classify, health, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
-import { terminateIota } from './guardian.js'
+import { terminateIotaAppNow, terminateIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
 import { AGENT_DIR } from './paths.js'
 import { installFeishuLaunchAgent } from './launchagent.js'
@@ -95,7 +95,11 @@ async function checkSpeedtestRecovery(client: Client, config: FeishuCredentials)
     await writeRecoveryState(state)
     await event(`测速低速自动恢复：第 ${state.restarts}/3 次重启`)
     try {
-      await terminateIota(await processes())
+      const appCount = await terminateIotaAppNow()
+      await event(`测速低速自动恢复：已结束 ${appCount} 个 IOTA 主程序，等待 3 秒`)
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      const workerCount = await terminateIotaWorkersNow()
+      await event(`测速低速自动恢复：已向 ${workerCount} 个 main_pool 发送结束信号，等待 5 秒`)
       await new Promise((resolve) => setTimeout(resolve, 5000))
       await startOptimized()
       await event('测速低速恢复重启请求已提交')
@@ -111,10 +115,32 @@ async function checkSpeedtestRecovery(client: Client, config: FeishuCredentials)
 }
 
 function date(ts: number | null | undefined): string {
-  return ts ? new Date(ts * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—'
+  if (!ts || !Number.isFinite(ts)) return '—'
+  const millis = ts > 100_000_000_000 ? ts : ts * 1000
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(millis))
+  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? '00'
+  return `${part('month')}月${part('day')}日 ${part('hour')}:${part('minute')}:${part('second')}`
 }
 function num(n: number | null | undefined, digits = 4): string {
   return typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('zh-CN', { maximumFractionDigits: digits }) : '—'
+}
+function updatedAt(): string { return `更新时间：${date(Date.now())}` }
+function dateMinute(ts: number | null | undefined): string {
+  if (!ts || !Number.isFinite(ts)) return '—'
+  const millis = ts > 100_000_000_000 ? ts : ts * 1000
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(millis))
+  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? '00'
+  return `${part('month')}月${part('day')}日 ${part('hour')}:${part('minute')}`
+}
+function relativeAge(ts: number, nowSec = Date.now() / 1000): string {
+  const days = Math.max(0, Math.floor((nowSec - ts) / 86400))
+  if (days === 0) return '今天'
+  if (days === 1) return '1天前'
+  return `${days}天前`
 }
 
 async function statusText(minerId: string): Promise<string> {
@@ -123,25 +149,68 @@ async function statusText(minerId: string): Promise<string> {
   const app = [...rows.values()].find((row) => row.command === appPath)
   const worker = [...rows.values()].filter((row) => row.command.startsWith(`${appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')}`) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
   const evidence = parseLogs(records, state)
-  const currentLocal = classify(evidence, app?.pid ?? null, worker.length > 0, control, Date.now() / 1000)
-  const local = `${currentLocal.description} (${currentLocal.status})`
+  const latestProductiveFromLogs = [...records].reverse().find((record) => /Starting FORWARD pass|after training forward pass/.test(record.line))
+  const localState = classify(evidence, app?.pid ?? null, worker.length > 0, control, Date.now() / 1000)
   const client = createOfficialClient()
   const official = await client.lookupMiner(minerId)
   const runId = official.runId
-  const details = runId ? await client.queryDashboardDetails(runId, minerId).catch(() => null) : null
-  const latestTokens = details?.tokens.data_points.at(-1)
-  const lastProductive = details?.tokens.data_points.slice().reverse().find((point) => point.token_count > 0)
-  const occupancyResponse = await client.request<{ run_ids: string[]; active_miners: number[]; max_miners: number[]; slots_remaining: number[] }>('/v1/runs_occupancy').catch(() => null)
-  const runs = occupancyResponse?.data.run_ids.map((id, i) => `${id}: ${occupancyResponse.data.active_miners[i]}/${occupancyResponse.data.max_miners[i]} (余 ${occupancyResponse.data.slots_remaining[i]})`).join('\n') || '全网任务信息暂不可用'
-  return [
-    `IOTA 本地状态：${local}`,
-    `应用进程：${app ? `运行中 PID ${app.pid}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
-    `队列：${evidence.queueStatus ?? '—'}${evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}；训练状态：${evidence.trainingState ?? '—'}；最后训练活动：${date(evidence.trainingAt)}`,
-    `官方状态：${official.status}；任务：${official.runId ?? '—'}；在线：${official.miner?.isActive ?? '—'}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；采样：${date(official.miner?.sampleAt)}`,
-    `官方产出：最新 token ${num(latestTokens?.token_count, 0)}；全网 token ${num(latestTokens?.network_tokens, 0)}；上次有产出 ${date(lastProductive?.timestamp)}；数据时间 ${date(official.lastSuccessfulFetchAt)}`,
-    `全网任务容量：\n${runs}`,
-    official.warning ? `提示：${official.warning}` : '',
-  ].filter(Boolean).join('\n')
+  const [details, networkRuns] = await Promise.all([
+    runId ? client.queryDashboardDetails(runId, minerId).catch(() => null) : Promise.resolve(null),
+    client.networkRuns().catch(() => null),
+  ])
+  const points = details?.tokens.data_points ?? []
+  const productivePoints = points.filter((point) => point.token_count > 0).sort((a, b) => b.timestamp - a.timestamp)
+  const latestProductive = productivePoints[0]
+  const metrics = details?.metrics
+  const epochRecords = metrics ? metrics.epochs.map((epoch, i) => ({
+    epoch,
+    ts: metrics.timestamps[i] ?? 0,
+    rank: metrics.activation_ranks[i] ?? null,
+    total: metrics.num_hotkeys_in_epochs[i] ?? null,
+    uploaded: (metrics.weight_uploaded[i] ?? 0) > 0,
+  })).filter((record) => record.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 10) : []
+  const latestEpochTs = epochRecords[0]?.ts ?? latestProductive?.timestamp ?? latestProductiveFromLogs?.t ?? evidence.trainingAt ?? null
+  const isQueuedLocally = official.miner === null && (evidence.queueStatus === 'queued' || localState.status === 'queued')
+  const officialStatus = official.status === 'contributing'
+    ? '训练中'
+    : official.status === 'waiting'
+      ? '等待任务中'
+      : official.status === 'idle'
+        ? '未训练'
+        : official.status === 'not_found'
+          ? '官方名单未找到'
+          : official.status === 'refresh_interrupted'
+            ? '官方数据刷新中断'
+            : '状态待确认'
+  const task = official.runId ? networkRuns?.find((run) => run.runId === official.runId) : null
+  const headline = isQueuedLocally
+    ? `状态：排队中${evidence.queuePosition === null ? '' : `，第 ${evidence.queuePosition} 位`}，最后训练：${date(latestEpochTs)}`
+    : `状态：${officialStatus}，任务：${task?.description || official.runId || '—'}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；采样：${date(official.miner?.sampleAt)}；上一次产出：${date(latestProductive?.timestamp)}`
+  const separator = '--------------------------------------------------'
+  const trainingLines = epochRecords.map((record) => {
+    const rank = record.rank !== null && record.rank > 0 ? `${record.rank} / ${record.total ?? '—'}` : '—'
+    const upload = record.uploaded ? 'weights uploaded' : 'weights not uploaded'
+    return `#${record.epoch}，${dateMinute(record.ts)}（${relativeAge(record.ts)}），${upload}，${rank}`
+  })
+  const runGroups: Array<[string, NonNullable<typeof networkRuns>[number][]]> = [
+    ['金级', (networkRuns ?? []).filter((run) => run.tier === 'gold')],
+    ['银级', (networkRuns ?? []).filter((run) => run.tier === 'silver')],
+    ['铜级', (networkRuns ?? []).filter((run) => run.tier === 'bronze')],
+    ['其他', (networkRuns ?? []).filter((run) => run.tier === 'other')],
+  ]
+  const capacity = networkRuns
+    ? runGroups.filter(([, runs]) => runs.length > 0).map(([label, runs]) => `${label}：\n${runs.map((run) => `${run.description || run.runId}：${run.activeMiners}/${run.maxMiners}（剩余 ${run.slotsRemaining}）`).join('\n')}`).join('\n') || '当前没有全网任务'
+    : '全网任务信息暂不可用'
+  const output = [
+    headline,
+    `应用进程：${app ? `运行中，PID ${app.pid}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
+    ...(trainingLines.length ? [separator, '训练记录：', '轮次\t时间\t状态\t排名', ...trainingLines] : []),
+    separator,
+    `全网任务容量：\n${capacity}`,
+    separator,
+    updatedAt(),
+  ]
+  return output.join('\n')
 }
 
 async function earningsText(minerId: string): Promise<string> {
@@ -151,19 +220,24 @@ async function earningsText(minerId: string): Promise<string> {
     client.request<{ timestamps: number[]; alpha_amounts: number[]; statuses: string[] }>(`/v1/entitlements/history/hotkey/${minerId}`),
   ])
   const items = history.data.timestamps.map((ts, i) => ({ ts, amount: history.data.alpha_amounts[i] ?? 0, status: history.data.statuses[i] ?? 'unknown' })).sort((a, b) => b.ts - a.ts)
-  const lines = items.map((item) => `${date(item.ts)} | ${num(item.amount)} IOTA | ${item.status}`)
+  const lines = items.filter((item) => item.amount > 0).map((item) => `${date(item.ts)} | ${num(item.amount)} IOTA | ${item.status}`)
   return [
     `收益总览：累计 ${num(totals.data.total_amount_earned)} IOTA；已支付 ${num(totals.data.total_amount_paid)}；待支付 ${num(totals.data.total_amount_pending)}；冻结 ${num(totals.data.total_amount_frozen)}；最低支付 ${num(totals.data.minimum_payout_amount)}`,
     '收益记录（最新在前）：', ...(lines.length ? lines : ['暂无记录']),
+    updatedAt(),
   ].join('\n')
 }
 
 async function restartAndReport(): Promise<string> {
-  if (!appInstalled()) return '重启失败：未找到 IOTA Train at Home.app。'
+  const result = async (text: string): Promise<string> => `${text}\n${updatedAt()}`
+  if (!appInstalled()) return result('重启失败：未找到 IOTA Train at Home.app。')
   let appStartedAt = Date.now() / 1000
   try {
-    const rows = await processes()
-    await terminateIota(rows)
+    const appCount = await terminateIotaAppNow()
+    await event(`飞书手动重启：已结束 ${appCount} 个 IOTA 主程序，等待 3 秒`)
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+    const workerCount = await terminateIotaWorkersNow()
+    await event(`飞书手动重启：已向 ${workerCount} 个 main_pool 进程发送结束信号，等待 5 秒`)
     await new Promise((resolve) => setTimeout(resolve, 5000))
     await startOptimized()
     const deadline = Date.now() + 120_000
@@ -173,14 +247,14 @@ async function restartAndReport(): Promise<string> {
       if ([...current.values()].some((row) => row.command === appExecutablePath())) { appFound = true; appStartedAt = Date.now() / 1000; break }
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
-    if (!appFound) return '重启失败：启动后 2 分钟内未检测到 IOTA 进程。'
+    if (!appFound) return result('重启失败：启动后 2 分钟内未检测到 IOTA 进程。')
   } catch (error) {
-    return `重启失败：${error instanceof Error ? error.message : String(error)}`
+    return result(`重启失败：${error instanceof Error ? error.message : String(error)}`)
   }
   const speed = await waitForSpeedtest(appStartedAt, 15 * 60_000)
-  if (!speed) return 'IOTA 进程已启动；等待测速结果超时（15 分钟），请查看本机 IOTA 日志。'
+  if (!speed) return result('IOTA 进程已启动；等待测速结果超时（15 分钟），请查看本机 IOTA 日志。')
   const low = speed.download < LOW_SPEED && speed.upload < LOW_SPEED
-  return `重启成功；测速时间 ${date(speed.at)}，下载 ${num(speed.download, 2)} Mbps，上传 ${num(speed.upload, 2)} Mbps。${low ? '测速仍低于 1 Mbps。' : ''}`
+  return result(`重启成功；测速时间 ${date(speed.at)}，下载 ${num(speed.download, 2)} Mbps，上传 ${num(speed.upload, 2)} Mbps。${low ? '测速仍低于 1 Mbps。' : ''}`)
 }
 
 async function waitForSpeedtest(after: number, timeout: number): Promise<{ at: number; download: number; upload: number } | null> {
@@ -276,6 +350,9 @@ export async function runFeishuBot(minerId: string): Promise<void> {
       let text = ''
       try { text = String((JSON.parse(data.message.content) as { text?: string }).text ?? '').trim() } catch { return }
       try {
+        const acknowledgement = text === '状态' ? '正在查询状态…' : text === '重启' ? '已收到重启命令，正在重启 IOTA 并等待测速…' : text === '收益' ? '正在查询收益…' : ''
+        if (!acknowledgement) return
+        await sendText(client, config.chatId, `已收到「${text}」，${acknowledgement}`)
         if (text === '状态') await sendText(client, config.chatId, await statusText(minerId))
         else if (text === '重启') await sendText(client, config.chatId, await restartAndReport())
         else if (text === '收益') await sendText(client, config.chatId, await earningsText(minerId))
@@ -285,8 +362,11 @@ export async function runFeishuBot(minerId: string): Promise<void> {
       if (!allowed.has(evt.operator.openId) || evt.chatId !== config.chatId) return
       const action = (evt.action.value as { command?: string } | undefined)?.command
       try {
-        const text = action === 'status' ? await statusText(minerId) : action === 'restart' ? await restartAndReport() : action === 'earnings' ? await earningsText(minerId) : ''
-        if (text) await sendText(client, config.chatId, text)
+        const acknowledgement = action === 'status' ? '已收到「状态」，正在查询…' : action === 'restart' ? '已收到「重启」，正在重启 IOTA 并等待测速…' : action === 'earnings' ? '已收到「收益」，正在查询…' : ''
+        if (!acknowledgement) return
+        await sendText(client, config.chatId, acknowledgement)
+        const text = action === 'status' ? await statusText(minerId) : action === 'restart' ? await restartAndReport() : await earningsText(minerId)
+        await sendText(client, config.chatId, text)
       } catch (error) { await sendText(client, config.chatId, `命令执行失败：${error instanceof Error ? error.message : String(error)}`) }
     },
   })

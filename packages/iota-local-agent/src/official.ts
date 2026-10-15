@@ -7,6 +7,8 @@ type ApiResponse = { data: any; fetchedAt: number; stale: boolean }
 const BASE = 'https://iota-web.api.macrocosmos.ai/mainnet'
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 type RunsData = { runs: { run_id: string; state: string; metadata?: { model_name?: string; model_size?: string; description?: string } | null }[] }
+export type RunTier = 'gold' | 'silver' | 'bronze' | 'other'
+export interface NetworkRun { runId: string; tier: RunTier; tierLabel: string; description: string; model: string | null; modelSize: string | null; activeMiners: number; maxMiners: number; slotsRemaining: number }
 type OccupancyData = { run_ids: string[]; active_miners: number[]; max_miners: number[]; slots_remaining: number[] }
 type MinerListData = { miners: { hotkey: string; is_active: boolean; timestamp?: number; throughput?: number; activation_count?: number }[] }
 type EarningsTotals = { total_amount_earned: number; total_amount_paid: number; total_amount_pending: number; total_amount_frozen: number; minimum_payout_amount: number }
@@ -24,6 +26,18 @@ function allowed(path: string): boolean {
   if (/^\/v1\/epoch_miner_scores\/runs\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/hotkeys\/[1-9A-HJ-NP-Za-km-z]{45,55}\/(metrics\?period=week|throughput\?moving_average_window=3&period=week)$/.test(path)) return true
   if (/^\/miners\/[1-9A-HJ-NP-Za-km-z]{45,55}\/runs\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/tokens\?period=week$/.test(path)) return true
   return false
+}
+
+export function tierFromDescription(description: string | null | undefined): RunTier {
+  const text = description?.toLowerCase() ?? ''
+  if (/\bgold\b|金/.test(text)) return 'gold'
+  if (/\bsilver\b|银/.test(text)) return 'silver'
+  if (/\bbronze\b|铜/.test(text)) return 'bronze'
+  return 'other'
+}
+export const RUN_TIER_ORDER: Record<RunTier, number> = { gold: 0, silver: 1, bronze: 2, other: 3 }
+export function sortNetworkRuns<T extends { tier: RunTier; runId: string }>(runs: T[]): T[] {
+  return [...runs].sort((a, b) => RUN_TIER_ORDER[a.tier] - RUN_TIER_ORDER[b.tier] || a.runId.localeCompare(b.runId))
 }
 function validMiner(id: string): boolean {
   try {
@@ -52,6 +66,26 @@ export function createOfficialClient() {
     cache.set(path, { data, at })
     return { data: data as T, fetchedAt: at, stale: false }
   }
+
+  async function networkRuns(): Promise<NetworkRun[]> {
+    const [occupancy, runMeta] = await Promise.all([
+      request<OccupancyData>('/v1/runs_occupancy'),
+      request<RunsData>('/runs'),
+    ])
+    const metadata = new Map(runMeta.data.runs.map((run) => [run.run_id, run]))
+    const runs = occupancy.data.run_ids.map((runId, i) => {
+      const meta = metadata.get(runId)
+      const description = meta?.metadata?.description ?? ''
+      const tier = tierFromDescription(description)
+      return {
+        runId, tier, tierLabel: tier === 'other' ? '未分类' : ({ gold: '金', silver: '银', bronze: '铜' } as const)[tier],
+        description, model: meta?.metadata?.model_name ?? null, modelSize: meta?.metadata?.model_size ?? null,
+        activeMiners: occupancy.data.active_miners[i] ?? 0, maxMiners: occupancy.data.max_miners[i] ?? 0,
+        slotsRemaining: occupancy.data.slots_remaining[i] ?? 0,
+      }
+    })
+    return sortNetworkRuns(runs)
+  }
   async function lookupMiner(minerId: string): Promise<Lookup> {
     if (!validMiner(minerId)) throw new Error('Miner ID 无效')
     const checkedAt = Date.now()
@@ -75,16 +109,16 @@ export function createOfficialClient() {
     }
   }
   async function queryDashboardDetails(runId: string, minerId: string): Promise<{
-    metrics: { epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[] }
+    metrics: { epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[]; states?: string[] }
     throughput: { epochs: number[]; throughputs: number[]; throughput_moving_avgs: number[]; timestamps: number[] }
     tokens: { data_points: { timestamp: number; token_count: number; network_tokens: number; contribution_fraction: number }[] }
   }> {
     const [metrics, throughput, tokens] = await Promise.all([
-      request<{ epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[] }>(`/v1/epoch_miner_scores/runs/${runId}/hotkeys/${minerId}/metrics?period=week`),
+      request<{ epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[]; states?: string[] }>(`/v1/epoch_miner_scores/runs/${runId}/hotkeys/${minerId}/metrics?period=week`),
       request<{ epochs: number[]; throughputs: number[]; throughput_moving_avgs: number[]; timestamps: number[] }>(`/v1/epoch_miner_scores/runs/${runId}/hotkeys/${minerId}/throughput?moving_average_window=3&period=week`),
       request<{ data_points: { timestamp: number; token_count: number; network_tokens: number; contribution_fraction: number }[] }>(`/miners/${minerId}/runs/${runId}/tokens?period=week`),
     ])
     return { metrics: metrics.data, throughput: throughput.data, tokens: tokens.data }
   }
-  return { request, lookupMiner, queryDashboardDetails }
+  return { request, networkRuns, lookupMiner, queryDashboardDetails }
 }

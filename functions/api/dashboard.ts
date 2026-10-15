@@ -117,7 +117,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   if (officialLookup.runId) {
     const runId = officialLookup.runId
     type Metrics = {
-      epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[]
+      epochs: number[]; token_counts: number[]; act_contribution_percs: number[]; activation_ranks: number[]; num_hotkeys_in_epochs: number[]; uploaded_partition_percs: number[]; weight_uploaded: number[]; timestamps: number[]; states?: string[]
     }
     type Throughput = {
       epochs: number[]; throughputs: number[]; throughput_moving_avgs: number[]; timestamps: number[]
@@ -162,6 +162,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
         rank: metrics.activation_ranks[i] ?? null,
         numHotkeys: metrics.num_hotkeys_in_epochs[i] ?? null,
         contribution: metrics.act_contribution_percs[i] ?? null,
+        weightUploaded: metrics.weight_uploaded[i] ?? 0,
+        uploadState: metrics.states?.[i] ?? ((metrics.weight_uploaded[i] ?? 0) > 0 ? 'weights uploaded' : 'weights not uploaded'),
       }))
       .filter((r) => r.tokens > 0)
       .sort((a, b) => b.ts - a.ts)

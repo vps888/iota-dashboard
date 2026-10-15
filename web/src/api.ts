@@ -28,6 +28,8 @@ export interface EpochRecord {
   rank: number | null
   numHotkeys: number | null
   contribution: number | null
+  weightUploaded: number
+  uploadState: string
 }
 
 export interface Payment {
