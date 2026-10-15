@@ -11,11 +11,11 @@ import {
 } from './guardian.js'
 import { startOptimized, appInstalled } from './launcher.js'
 import { installLaunchAgent, installFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
-import { runFeishuDiscovery, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
+import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.0'
+const AGENT_VERSION = '0.2.1'
 
 function usage(): void {
   console.log(`miner-agent ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
@@ -29,6 +29,7 @@ function usage(): void {
   miner-agent miner list           列出自动发现的本机 Miner ID
   miner-agent miner select <序号>  选择用于飞书查询的 Miner ID
   miner-agent feishu connect       自动配对飞书会话与当前用户
+  miner-agent feishu service       运行飞书机器人后台服务
 `)
 }
 
@@ -223,7 +224,11 @@ async function main(): Promise<void> {
         } finally { terminal.close() }
       } else if (action === 'connect') {
         await runFeishuDiscovery()
-      } else fail('用法: miner-agent feishu setup | connect')
+      } else if (action === 'service') {
+        const config = await loadFeishuConfig()
+        if (!config) fail('请先运行 miner-agent feishu setup')
+        await runFeishuBot(config.minerId)
+      } else fail('用法: miner-agent feishu setup | connect | service')
       break
     }
     default:

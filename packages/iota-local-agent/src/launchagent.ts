@@ -40,7 +40,7 @@ export async function startFeishuLaunchAgent(): Promise<void> {
   if (result.code !== 0) throw new Error(`飞书机器人启动失败：${result.stderr.trim()}`)
 }
 export async function stopLaunchAgent(): Promise<void> { await stop(LAUNCH_AGENT_LABEL, LAUNCH_AGENT_PLIST) }
-export async function installFeishuLaunchAgent(): Promise<void> { await install(FEISHU_LABEL, FEISHU_PLIST, ['feishu', 'run'], join(AGENT_DIR, 'feishu.log')) }
+export async function installFeishuLaunchAgent(): Promise<void> { await install(FEISHU_LABEL, FEISHU_PLIST, ['feishu', 'service'], join(AGENT_DIR, 'feishu.log')) }
 export async function stopFeishuLaunchAgent(): Promise<void> { await stop(FEISHU_LABEL, FEISHU_PLIST) }
 export async function launchAgentStatus(): Promise<{ guardian: boolean; feishu: boolean }> {
   uid()
