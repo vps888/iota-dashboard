@@ -25,3 +25,11 @@ test('does not select workers while the official app is running', () => {
   ]), app, worker)
   assert.equal(found.size, 0)
 })
+
+
+test('only recognizes the miner-agent relay entrypoint, not unrelated listeners', async () => {
+  const { isManagedRelayCommand } = await import('../dist/launcher.js')
+  assert.equal(isManagedRelayCommand('/Users/me/node /opt/miner-agent/dist/relay-entry.js'), true)
+  assert.equal(isManagedRelayCommand('/Applications/Other.app/Contents/MacOS/server'), false)
+  assert.equal(isManagedRelayCommand(null), false)
+})

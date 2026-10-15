@@ -17,15 +17,64 @@ function relayScriptPath(): string {
   return `${here}relay-entry.js`
 }
 
-async function relayAlreadyRunning(): Promise<boolean> {
+async function relayCommand(pid: number): Promise<string | null> {
+  try {
+    const command = await execFileText('ps', ['-p', String(pid), '-o', 'command='])
+    return command.trim() || null
+  } catch {
+    return null
+  }
+}
+
+export function isManagedRelayCommand(command: string | null): boolean {
+  return Boolean(command && /(?:^|\/)relay-entry\.js(?:\s|$)/.test(command))
+}
+
+function isManagedRelay(command: string | null): boolean { return isManagedRelayCommand(command) }
+
+async function listenerPids(port: number): Promise<number[]> {
+  try {
+    const output = await execFileText('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])
+    return [...new Set(output.split(/\s+/).map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))]
+  } catch {
+    return []
+  }
+}
+
+async function removeDeadRelayPid(): Promise<void> {
   try {
     const pid = Number((await readFile(RELAY_PID_PATH, 'utf8')).trim())
-    if (!Number.isFinite(pid)) return false
-    const command = await execFileText('ps', ['-p', String(pid), '-o', 'command='])
-    return command.includes('relay-entry.js')
+    if (!Number.isInteger(pid) || pid <= 0) return
+    const command = await relayCommand(pid)
+    if (isManagedRelay(command)) {
+      try { process.kill(pid, 'SIGTERM') } catch { /* process already exited */ }
+      const deadline = Date.now() + 2_000
+      while (Date.now() < deadline && isManagedRelay(await relayCommand(pid))) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
   } catch {
-    return false
+    // A missing or stale pid file is safe; never signal a process we cannot verify.
   }
+}
+
+export async function inspectRelayPort(port = RELAY_PORT): Promise<Array<{ pid: number; command: string }>> {
+  const pids = await listenerPids(port)
+  return Promise.all(pids.map(async (pid) => ({ pid, command: (await relayCommand(pid)) ?? '命令行不可读取' })))
+}
+
+async function adoptExistingRelay(port: number): Promise<boolean> {
+  const pids = await listenerPids(port)
+  if (pids.length === 0) return false
+  const listeners = await Promise.all(pids.map(async (pid) => ({ pid, command: await relayCommand(pid) })))
+  const relay = listeners.find((item) => isManagedRelay(item.command))
+  if (relay) {
+    await writeFile(RELAY_PID_PATH, String(relay.pid))
+    console.log(`复用已运行的 miner-agent 本地中继（PID ${relay.pid}）。`)
+    return true
+  }
+  const owner = listeners.map(({ pid, command }) => `PID ${pid}: ${command ?? '命令不可读'}`).join('; ')
+  throw new Error(`本地端口 ${port} 被其他程序占用，未结束未知进程：${owner}`)
 }
 
 function portInUse(port: number): Promise<boolean> {
@@ -60,9 +109,11 @@ export async function startOptimized(): Promise<void> {
   const cleaned = await terminateOrphanedIotaWorkers(rows)
   if (cleaned > 0) console.log(`已清理 ${cleaned} 个 IOTA main_pool 残留进程。`)
 
-  if (!(await relayAlreadyRunning())) {
+  const relayReady = await adoptExistingRelay(RELAY_PORT)
+  if (!relayReady) {
+    await removeDeadRelayPid()
     if (await portInUse(RELAY_PORT)) {
-      throw new Error('本地端口 18010 被其他程序占用;未启动 IOTA。')
+      throw new Error(`本地端口 ${RELAY_PORT} 仍被占用，未启动 IOTA。请运行 miner-agent status 并检查占用进程。`)
     }
     const log = await open(RELAY_LOG_PATH, 'a')
     const relay = spawn(process.execPath, [relayScriptPath()], {

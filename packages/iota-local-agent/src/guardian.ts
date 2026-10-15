@@ -291,6 +291,8 @@ export interface GuardianState {
   status: StatusKind
   description: string
   appPid: number | null
+  relayPid?: number | null
+  port18010?: Array<{ pid: number; command: string }>
   minerAlive: boolean
   controlConnected: boolean
   badChecks: number

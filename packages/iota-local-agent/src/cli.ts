@@ -9,7 +9,7 @@ import {
   INTERVAL_SEC, processes, logRecords, parseLogs, health, classify, decision,
   terminateIota, orphanedIotaWorkers, appExecutablePath, workerExecutablePath, type GuardianState,
 } from './guardian.js'
-import { startOptimized, appInstalled } from './launcher.js'
+import { startOptimized, appInstalled, isManagedRelayCommand, inspectRelayPort } from './launcher.js'
 import { installLaunchAgent, installFeishuLaunchAgent, stopFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
 import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
 import { homedir } from 'node:os'
@@ -65,6 +65,8 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
   const minerAlive = [...rows.values()].some((row) => row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker') || row.command.startsWith(worker))
   const evidence = parseLogs(await logRecords(), previous)
   const control = await health()
+  const relayListeners = await inspectRelayPort().catch(() => [])
+  const relayListener = relayListeners.find((listener) => isManagedRelayCommand(listener.command))
   const classified = classify(evidence, appPid, minerAlive, control, now)
   const status = classified.status
   const description = evidence.p2pRestartRecommended
@@ -78,6 +80,8 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
     status,
     description,
     appPid,
+    relayPid: relayListener?.pid ?? null,
+    port18010: relayListeners,
     minerAlive,
     controlConnected: Boolean(control?.connected),
     badChecks: bad ? ((sameSession ? (previous.badChecks ?? 0) : 0) + 1) : 0,
@@ -96,6 +100,8 @@ function display(state: Partial<GuardianState>): void {
   console.log('更新时间:', state.updatedAt ?? '尚未检查')
   console.log('当前状态:', state.description ?? '未知')
   console.log('控制连接:', state.controlConnected ? '正常' : '未连接')
+  if (state.relayPid !== undefined) console.log('本地中继:', state.relayPid ? `运行中（PID ${state.relayPid}）` : '未运行')
+  if (state.port18010?.length) console.log('18010 端口监听:', state.port18010.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(miner-agent 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
   if (state.queueUpdatedAt) console.log('队列更新时间:', clockString(state.queueUpdatedAt))
   if (state.lastRestartAt) console.log('最近自动重启:', clockString(state.lastRestartAt))
   if (state.recoveryNote) console.log('恢复说明:', state.recoveryNote)
@@ -177,6 +183,9 @@ async function main(): Promise<void> {
       const rows = await processes()
       const appPid = [...rows.values()].find((row) => row.command === appExecutablePath())?.pid
       console.log('IOTA 应用:', appPid ? `运行中（PID ${appPid}）` : '未运行')
+      const relayOwners = await inspectRelayPort().catch(() => [])
+      console.log('本地中继:', relayOwners.some((p) => isManagedRelayCommand(p.command)) ? '运行中' : '未运行')
+      if (relayOwners.length) console.log('18010 端口监听:', relayOwners.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(miner-agent 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
       const services = await launchAgentStatus()
       console.log('守护服务:', services.guardian ? '运行中' : '已停止')
       console.log('飞书机器人:', services.feishu ? '运行中' : '已停止')
