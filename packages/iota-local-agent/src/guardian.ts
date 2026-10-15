@@ -389,6 +389,29 @@ export async function terminateIotaWorkersNow(): Promise<number> {
   return terminateMatchingNow((row) => isIotaWorker(row, worker))
 }
 
+export interface IotaProcessSnapshot {
+  appPid: number | null
+  workers: Array<{ pid: number; command: string }>
+  workerCount: number
+  capturedAt: number
+}
+
+export async function iotaProcessSnapshot(): Promise<IotaProcessSnapshot> {
+  const rows = await processes()
+  const app = appExecutablePath()
+  const worker = workerExecutablePath()
+  const workers = [...rows.values()]
+    .filter((row) => isIotaWorker(row, worker))
+    .map(({ pid, command }) => ({ pid, command }))
+    .sort((a, b) => a.pid - b.pid)
+  return {
+    appPid: [...rows.values()].find((row) => row.command === app)?.pid ?? null,
+    workers,
+    workerCount: workers.length,
+    capturedAt: Date.now() / 1000,
+  }
+}
+
 // 强制结束经过校验的 IOTA main_pool 及其 worker 子进程，等价于针对其 PID 集合执行 pkill。
 export async function killIotaWorkersNow(): Promise<number> {
   const worker = workerExecutablePath()

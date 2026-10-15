@@ -5,15 +5,15 @@ import { homedir } from 'node:os'
 import { appInstalled, startOptimized } from './launcher.js'
 import { createOfficialClient } from './official.js'
 
-import { appExecutablePath, classify, health, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
+import { appExecutablePath, classify, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
 import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
-import { AGENT_DIR } from './paths.js'
+import { AGENT_DIR, PROCESS_MONITOR_STATE_PATH } from './paths.js'
 import { installFeishuLaunchAgent } from './launchagent.js'
 import { validateMinerId } from './ss58.js'
 import { detectLocalMinerIds, type LocalMinerIdentity } from './identity.js'
 
-export interface FeishuCredentials { appId: string; appSecret: string; chatId: string; minerId: string; allowedOpenIds: string[]; speedtestRecoveryEnabled?: boolean }
+export interface FeishuCredentials { appId: string; appSecret: string; chatId: string; minerId: string; allowedOpenIds: string[]; speedtestRecoveryEnabled?: boolean; processAlertsEnabled?: boolean }
 const FEISHU_CONFIG_PATH = join(homedir(), '.miner-agent', 'feishu.json')
 const LOW_SPEED = 1
 
@@ -114,6 +114,50 @@ async function checkSpeedtestRecovery(client: Client, config: FeishuCredentials)
   }
 }
 
+interface PersistedIotaSnapshot {
+  appPid: number | null
+  workers: Array<{ pid: number; command: string }>
+  initialized: boolean
+  observedAt: number
+}
+export function endedIotaProcesses(
+  previous: Pick<PersistedIotaSnapshot, 'appPid' | 'workers'>,
+  current: Pick<PersistedIotaSnapshot, 'appPid' | 'workers'>,
+): { appEnded: boolean; appReplaced: boolean; endedWorkers: PersistedIotaSnapshot['workers'] } {
+  return {
+    appEnded: previous.appPid !== null && current.appPid === null,
+    appReplaced: previous.appPid !== null && current.appPid !== null && previous.appPid !== current.appPid,
+    endedWorkers: previous.workers.filter((old) => !current.workers.some((now) => now.pid === old.pid && now.command === old.command)),
+  }
+}
+
+async function monitorIotaProcesses(client: Client, config: FeishuCredentials): Promise<void> {
+  const current = await iotaProcessSnapshot()
+  let previous: PersistedIotaSnapshot | null = null
+  try { previous = JSON.parse(await readFile(PROCESS_MONITOR_STATE_PATH, 'utf8')) as PersistedIotaSnapshot } catch {}
+  await mkdir(dirname(PROCESS_MONITOR_STATE_PATH), { recursive: true })
+  const next: PersistedIotaSnapshot = {
+    appPid: current.appPid,
+    workers: current.workers,
+    initialized: true,
+    observedAt: current.capturedAt,
+  }
+  // First sample establishes baseline; don't report processes that predate monitor startup.
+  if (previous?.initialized) {
+    const changes = endedIotaProcesses(previous, current)
+    const parts: string[] = []
+    if (changes.appEnded) parts.push(`IOTA 主程序 PID ${previous.appPid} 已结束`)
+    if (changes.appReplaced) parts.push(`IOTA 主程序已更换（PID ${previous.appPid} → ${current.appPid}）`)
+    if (changes.endedWorkers.length) parts.push(`${changes.endedWorkers.length} 个 main_pool 进程已结束：${changes.endedWorkers.map((row) => `PID ${row.pid}`).join(', ')}`)
+    if (parts.length && config.processAlertsEnabled !== false) {
+      await sendText(client, config.chatId, `IOTA 进程状态变化：${parts.join('；')}。当前主程序 ${current.appPid === null ? '未运行' : `PID ${current.appPid}`}，main_pool ${current.workerCount} 个。\n${updatedAt()}`)
+      await event(`飞书进程告警已发送：${parts.join('；')}`)
+    }
+  }
+  await writeFile(PROCESS_MONITOR_STATE_PATH, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+  await chmod(PROCESS_MONITOR_STATE_PATH, 0o600)
+}
+
 function date(ts: number | null | undefined): string {
   if (!ts || !Number.isFinite(ts)) return '—'
   const millis = ts > 100_000_000_000 ? ts : ts * 1000
@@ -192,14 +236,17 @@ async function statusText(minerId: string): Promise<string> {
     const upload = record.uploaded ? 'weights uploaded' : 'weights not uploaded'
     return `#${record.epoch}，${dateMinute(record.ts)}（${relativeAge(record.ts)}），${upload}，${rank}`
   })
-  const runGroups: Array<[string, NonNullable<typeof networkRuns>[number][]]> = [
-    ['金级', (networkRuns ?? []).filter((run) => run.tier === 'gold')],
-    ['银级', (networkRuns ?? []).filter((run) => run.tier === 'silver')],
-    ['铜级', (networkRuns ?? []).filter((run) => run.tier === 'bronze')],
-    ['其他', (networkRuns ?? []).filter((run) => run.tier === 'other')],
+  const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [
+    ['金级', 'Gold', (networkRuns ?? []).filter((run) => run.tier === 'gold')],
+    ['银级', 'Silver', (networkRuns ?? []).filter((run) => run.tier === 'silver')],
+    ['铜级', 'Bronze', (networkRuns ?? []).filter((run) => run.tier === 'bronze')],
+    ['其他', 'Other', (networkRuns ?? []).filter((run) => run.tier === 'other')],
   ]
   const capacity = networkRuns
-    ? runGroups.filter(([, runs]) => runs.length > 0).map(([label, runs]) => `${label}：\n${runs.map((run) => `${run.description || run.runId}：${run.activeMiners}/${run.maxMiners}（剩余 ${run.slotsRemaining}）`).join('\n')}`).join('\n') || '当前没有全网任务'
+    ? runGroups.filter(([, , runs]) => runs.length > 0).map(([label, english, runs]) => `${label}（${english}）：\n${runs.map((run) => {
+      const modelPrefix = run.modelSize || run.model || '1B'
+      return `${modelPrefix} - ${run.runId}：${run.activeMiners}/${run.maxMiners}（剩余 ${run.slotsRemaining}）`
+    }).join('\n')}`).join('\n') || '当前没有全网任务'
     : '全网任务信息暂不可用'
   const output = [
     headline,
@@ -386,6 +433,8 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   await sendText(client, botConfig.chatId, 'IOTA miner-agent 已连接。可发送：状态、重启、收益。')
   console.log(`miner-agent Feishu bot connected; target chat ${botConfig.chatId}`)
   while (true) {
+    try { await monitorIotaProcesses(client, config) }
+    catch (error) { await event(`IOTA 进程监控失败：${error instanceof Error ? error.message : String(error)}`) }
     try { if (config.speedtestRecoveryEnabled !== false) await checkSpeedtestRecovery(client, config) }
     catch (error) { await event(`测速恢复监控失败：${error instanceof Error ? error.message : String(error)}`) }
     await new Promise((resolve) => setTimeout(resolve, 30_000))

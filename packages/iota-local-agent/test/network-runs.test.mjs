@@ -57,3 +57,45 @@ test('restart flow uses staged IOTA and main_pool shutdown, and commands are ack
   assert.match(source, /handled\.set\(key, now \+ 60_000\)/)
   assert.match(source, /inFlight\.add\(key\)[\s\S]*inFlight\.delete\(key\)/)
 })
+
+test('polling process monitor compares PID and command identities and sends a Feishu alert for ended workers', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
+  assert.match(source, /setTimeout\(resolve, 30_000\)/)
+  assert.match(source, /previous\.workers\.filter\(\(old\) => !current\.workers\.some\(\(now\) => now\.pid === old\.pid && now\.command === old\.command\)\)/)
+  assert.match(source, /previous\.appPid !== null && current\.appPid === null/)
+  assert.match(source, /IOTA 进程状态变化/)
+  assert.match(source, /await sendText\(client, config\.chatId, `IOTA 进程状态变化/)
+})
+
+test('process monitor detects individual main_pool exits even when IOTA app remains alive', async () => {
+  const { endedIotaProcesses } = await import('../dist/feishu.js')
+  const previous = { appPid: 100, workers: [{ pid: 200, command: 'main_pool --worker' }, { pid: 201, command: 'main_pool --worker' }] }
+  const current = { appPid: 100, workers: [{ pid: 201, command: 'main_pool --worker' }] }
+  const changes = endedIotaProcesses(previous, current)
+  assert.equal(changes.appEnded, false)
+  assert.equal(changes.appReplaced, false)
+  assert.deepEqual(changes.endedWorkers.map((worker) => worker.pid), [200])
+})
+
+test('process monitor detects app exit and replacement independently', async () => {
+  const { endedIotaProcesses } = await import('../dist/feishu.js')
+  const workers = []
+  assert.equal(endedIotaProcesses({ appPid: 123, workers }, { appPid: null, workers }).appEnded, true)
+  assert.equal(endedIotaProcesses({ appPid: 123, workers }, { appPid: 456, workers }).appReplaced, true)
+  assert.equal(endedIotaProcesses({ appPid: null, workers }, { appPid: 456, workers }).appReplaced, false)
+})
+
+
+test('network capacity headings include English tiers and each row shows model plus run ID', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
+  assert.match(source, /\['金级', 'Gold'/)
+  assert.match(source, /\['银级', 'Silver'/)
+  assert.match(source, /\['铜级', 'Bronze'/)
+  assert.match(source, /`\$\{modelPrefix\} - \$\{run\.runId\}：/)
+})
