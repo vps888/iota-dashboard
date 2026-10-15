@@ -249,7 +249,7 @@ export function classify(
     }
   }
   if (!appPid) {
-    return { status: 'paused', description: 'IOTA 当前未运行；运行 miner-agent start 启动', bad: false }
+    return { status: 'paused', description: 'IOTA 当前未运行；运行 ma start 启动', bad: false }
   }
   if (!minerAlive) {
     return { status: 'abnormal', description: '矿工进程已退出', bad: true }

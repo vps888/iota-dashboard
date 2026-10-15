@@ -51,7 +51,8 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
           const meta = JSON.parse(input);
           const ok = meta.version === process.argv[1]
             && typeof meta.dist.tarball === "string"
-            && meta.bin?.["miner-agent"] === "dist/cli.js";
+            && Object.keys(meta.bin ?? {}).length === 1
+            && meta.bin?.ma === "dist/cli.js";
           process.exit(ok ? 0 : 1);
         } catch { process.exit(1); }
       });
@@ -73,6 +74,6 @@ printf '\n==> Verify fresh installation and CLI entry point\n'
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/miner-agent-publish-check.XXXXXX")"
 trap 'rm -rf "$VERIFY_DIR"' EXIT
 npm install --prefix "$VERIFY_DIR" --no-audit --no-fund "${PACKAGE_NAME}@${PACKAGE_VERSION}"
-"$VERIFY_DIR/node_modules/.bin/miner-agent" --help
+"$VERIFY_DIR/node_modules/.bin/ma" --help
 
 printf '\nVerified usable release: %s@%s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION"

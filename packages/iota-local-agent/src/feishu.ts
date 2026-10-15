@@ -348,7 +348,7 @@ async function sendText(client: Client, chatId: string, text: string): Promise<v
 
 export async function runFeishuDiscovery(): Promise<void> {
   const config = await loadFeishuConfig()
-  if (!config) throw new Error(`请先运行 miner-agent feishu setup：${FEISHU_CONFIG_PATH}`)
+  if (!config) throw new Error(`请先运行 ma feishu setup：${FEISHU_CONFIG_PATH}`)
   let paired = Boolean(config.chatId && config.allowedOpenIds.length)
   const dispatcher = new EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
@@ -369,14 +369,14 @@ export async function runFeishuDiscovery(): Promise<void> {
   await ws.start({ eventDispatcher: dispatcher })
   const deadline = Date.now() + 120_000
   while (!paired && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 500))
-  if (!paired) throw new Error('等待飞书配对超时，请重新运行 miner-agent feishu connect')
+  if (!paired) throw new Error('等待飞书配对超时，请重新运行 ma feishu connect')
 }
 
 export async function runFeishuBot(minerId: string): Promise<void> {
-  if (!validateMinerId(minerId).valid) throw new Error('先配置有效 Miner ID：miner-agent feishu setup')
+  if (!validateMinerId(minerId).valid) throw new Error('先配置有效 Miner ID：ma feishu setup')
   const config = await loadFeishuConfig()
   if (!config) throw new Error(`飞书尚未配置。配置文件：${FEISHU_CONFIG_PATH}`)
-  if (!config.chatId || config.allowedOpenIds.length === 0) throw new Error('飞书控制未完成配对：请配置 chat_id 和至少一个允许控制的 open_id。先运行 miner-agent feishu connect 完成配对。')
+  if (!config.chatId || config.allowedOpenIds.length === 0) throw new Error('飞书控制未完成配对：请配置 chat_id 和至少一个允许控制的 open_id。先运行 ma feishu connect 完成配对。')
   const botConfig = config
   const client = new Client({ appId: botConfig.appId, appSecret: botConfig.appSecret, domain: 'https://open.feishu.cn' })
   const allowed = new Set(botConfig.allowedOpenIds)
@@ -430,8 +430,8 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   const ws = new WSClient({ appId: config.appId, appSecret: config.appSecret, domain: 'https://open.feishu.cn' })
   await ws.start({ eventDispatcher: dispatcher })
   await event('飞书机器人长连接已启动')
-  await sendText(client, botConfig.chatId, 'IOTA miner-agent 已连接。可发送：状态、重启、收益。')
-  console.log(`miner-agent Feishu bot connected; target chat ${botConfig.chatId}`)
+  await sendText(client, botConfig.chatId, 'IOTA ma 已连接。可发送：状态、重启、收益。')
+  console.log(`ma Feishu bot connected; target chat ${botConfig.chatId}`)
   while (true) {
     try { await monitorIotaProcesses(client, config) }
     catch (error) { await event(`IOTA 进程监控失败：${error instanceof Error ? error.message : String(error)}`) }

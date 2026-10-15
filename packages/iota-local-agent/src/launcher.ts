@@ -70,7 +70,7 @@ async function adoptExistingRelay(port: number): Promise<boolean> {
   const relay = listeners.find((item) => isManagedRelay(item.command))
   if (relay) {
     await writeFile(RELAY_PID_PATH, String(relay.pid))
-    console.log(`复用已运行的 miner-agent 本地中继（PID ${relay.pid}）。`)
+    console.log(`复用已运行的 ma 本地中继（PID ${relay.pid}）。`)
     return true
   }
   const owner = listeners.map(({ pid, command }) => `PID ${pid}: ${command ?? '命令不可读'}`).join('; ')
@@ -113,7 +113,7 @@ export async function startOptimized(): Promise<void> {
   if (!relayReady) {
     await removeDeadRelayPid()
     if (await portInUse(RELAY_PORT)) {
-      throw new Error(`本地端口 ${RELAY_PORT} 仍被占用，未启动 IOTA。请运行 miner-agent status 并检查占用进程。`)
+      throw new Error(`本地端口 ${RELAY_PORT} 仍被占用，未启动 IOTA。请运行 ma status 并检查占用进程。`)
     }
     const log = await open(RELAY_LOG_PATH, 'a')
     const relay = spawn(process.execPath, [relayScriptPath()], {

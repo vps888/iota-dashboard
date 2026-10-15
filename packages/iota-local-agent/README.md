@@ -1,15 +1,17 @@
 # miner-agent
 
+CLI 简写：安装后使用 `ma` 命令（npm 包名仍为 `miner-agent`）。
+
 macOS 本地 IOTA Train at Home 守护与飞书控制工具。只管理 IOTA，不集成 NOID，也不再向 miner.zhetengxia.com 上报数据。官方状态与收益直接从 Macrocosmos API 查询。
 
 ## 安装与启动
 
 ```bash
-npm install -g miner-agent
-miner-agent install       # 设置登录后自动启动（守护；若飞书已配对也会启动机器人）
-miner-agent start         # 启动 IOTA（已运行时不重复启动）
-miner-agent status        # 查看 IOTA、守护与飞书状态
-miner-agent stop          # 停止 IOTA 与 main_pool，监控服务继续运行
+npm install -g miner-agent@0.2.8
+ma install       # 设置登录后自动启动（守护；若飞书已配对也会启动机器人）
+ma start         # 启动 IOTA（已运行时不重复启动）
+ma status        # 查看 IOTA、守护与飞书状态
+ma stop          # 停止 IOTA 与 main_pool，监控服务继续运行
 ```
 
 守护默认每 30 秒检查 IOTA 主程序、全部 main_pool 子进程、控制服务和日志；检测到监控启动后的主程序或 worker 进程退出时，会通过飞书主动告警。监控自身的异常恢复保留启动宽限、退避和限流保护。低速测速（下载与上传都低于 1 Mbps）连续触发恢复三次仍未改善时，会通过已连接的飞书机器人主动发送告警，不需要单独配置 webhook。
@@ -19,8 +21,8 @@ miner-agent stop          # 停止 IOTA 与 main_pool，监控服务继续运行
 飞书使用官方应用机器人和 WebSocket 长连接，不需要公网服务器、域名、Webhook 回调服务器或开放本机端口。机器人程序需要在这台 Mac 上运行并联网。
 
 1. 在[飞书开放平台](https://open.feishu.cn/app)创建企业自建应用、启用机器人能力，并配置收发消息权限和 `im.message.receive_v1` 长连接事件。发布应用后才会生效；无需公网服务器或回调地址。
-2. Mac 上运行 `miner-agent feishu setup`，只输入 App ID 和 App Secret。Agent 会从本机 Bittensor 钱包公钥文件自动发现账户地址；不会打开无扩展名的私钥文件，也不读取私钥或助记词。若本机存在多个公钥，会优先采用与当前 IOTA 钱包日志匹配的账号，并显示选择结果。
-3. 只有本机确实检测到多个 Miner ID 时，才需要用 `miner-agent miner list` 查看并通过 `miner-agent miner select <序号>` 切换。随后运行 `miner-agent feishu connect`，在飞书里给机器人发任意单聊消息完成自动配对。配对后机器人服务会自动安装并启动。`miner-agent install` 设置守护与已配对机器人登录后自动启动；更新 npm 包后运行 `miner-agent feishu restart`，让飞书服务重新加载新版本。`start/stop/status` 用于日常 IOTA 操作。
+2. Mac 上运行 `ma feishu setup`，只输入 App ID 和 App Secret。Agent 会从本机 Bittensor 钱包公钥文件自动发现账户地址；不会打开无扩展名的私钥文件，也不读取私钥或助记词。若本机存在多个公钥，会优先采用与当前 IOTA 钱包日志匹配的账号，并显示选择结果。
+3. 只有本机确实检测到多个 Miner ID 时，才需要用 `ma miner list` 查看并通过 `ma miner select <序号>` 切换。随后运行 `ma feishu connect`，在飞书里给机器人发任意单聊消息完成自动配对。配对后机器人服务会自动安装并启动。`ma install` 设置守护与已配对机器人登录后自动启动；更新 npm 包后运行 `ma feishu restart`，让飞书服务重新加载新版本。`start/stop/status` 用于日常 IOTA 操作。
 
 机器人命令：
 

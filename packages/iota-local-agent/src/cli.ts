@@ -2,7 +2,6 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { validateMinerId } from './ss58.js'
 import { LOCK_PATH } from './paths.js'
 import { readState, saveState, event, clockString } from './state.js'
 import {
@@ -15,22 +14,22 @@ import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCred
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.6'
+const AGENT_VERSION = '0.2.8'
 
 function usage(): void {
-  console.log(`miner-agent ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
+  console.log(`ma ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
 
 用法:
-  miner-agent install              设置登录后自动运行（守护和已配对的飞书机器人）
-  miner-agent stop                 停止 IOTA 与 main_pool（守护服务继续运行）
-  miner-agent status               查看 IOTA 与监控服务状态
-  miner-agent start                启动 IOTA（已运行时不重复启动）
-  miner-agent feishu setup         交互配置飞书应用凭据并自动发现本机 Miner ID
-  miner-agent miner list           列出自动发现的本机 Miner ID
-  miner-agent miner select <序号>  选择用于飞书查询的 Miner ID
-  miner-agent feishu connect       自动配对飞书会话与当前用户
-  miner-agent feishu restart      重启飞书后台服务（重新加载当前安装版本）
-  miner-agent feishu service       运行飞书机器人后台服务
+  ma install              设置登录后自动运行（守护和已配对的飞书机器人）
+  ma stop                 停止 IOTA 与 main_pool（守护服务继续运行）
+  ma status               查看 IOTA 与监控服务状态
+  ma start                启动 IOTA（已运行时不重复启动）
+  ma feishu setup         交互配置飞书应用凭据并自动发现本机 Miner ID
+  ma miner list           列出自动发现的本机 Miner ID
+  ma miner select <序号>  选择用于飞书查询的 Miner ID
+  ma feishu connect       自动配对飞书会话与当前用户
+  ma feishu restart       重启飞书后台服务（重新加载当前安装版本）
+  ma feishu service       运行飞书机器人后台服务
 `)
 }
 
@@ -70,7 +69,7 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
   const classified = classify(evidence, appPid, minerAlive, control, now)
   const status = classified.status
   const description = evidence.p2pRestartRecommended
-    ? `${classified.description};检测到 P2P 节点缺失,建议彻底退出 IOTA 并通过 miner-agent start 清理残留进程后重启`
+    ? `${classified.description};检测到 P2P 节点缺失,建议彻底退出 IOTA 并通过 ma start 清理残留进程后重启`
     : classified.description
   const bad = classified.bad
   const sameSession = evidence.sessionStartedAt === previous.sessionStartedAt
@@ -89,7 +88,7 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number, to
     restartHistory: previous.restartHistory ?? [],
     recoveryNote: orphanedWorkers.size > 0
       ? `发现 ${orphanedWorkers.size} 个残留 IOTA main_pool 进程;确认 App 已退出后,守护会先清理再启动`
-      : evidence.p2pRestartRecommended ? '日志检测到相邻层 P2P 节点缺失;建议彻底退出 IOTA 并使用 miner-agent start 重启' : null,
+      : evidence.p2pRestartRecommended ? '日志检测到相邻层 P2P 节点缺失;建议彻底退出 IOTA 并使用 ma start 重启' : null,
     agentStartedAt,
     totalRestarts,
   }
@@ -101,7 +100,7 @@ function display(state: Partial<GuardianState>): void {
   console.log('当前状态:', state.description ?? '未知')
   console.log('控制连接:', state.controlConnected ? '正常' : '未连接')
   if (state.relayPid !== undefined) console.log('本地中继:', state.relayPid ? `运行中（PID ${state.relayPid}）` : '未运行')
-  if (state.port18010?.length) console.log('18010 端口监听:', state.port18010.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(miner-agent 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
+  if (state.port18010?.length) console.log('18010 端口监听:', state.port18010.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(ma 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
   if (state.queueUpdatedAt) console.log('队列更新时间:', clockString(state.queueUpdatedAt))
   if (state.lastRestartAt) console.log('最近自动重启:', clockString(state.lastRestartAt))
   if (state.recoveryNote) console.log('恢复说明:', state.recoveryNote)
@@ -165,7 +164,7 @@ async function main(): Promise<void> {
       await installLaunchAgent()
       const feishu = await loadFeishuConfig()
       if (feishu?.chatId && feishu.allowedOpenIds.length) await installFeishuLaunchAgent()
-      console.log('miner-agent 守护和已配对的飞书机器人已设为登录后自动运行。')
+      console.log('ma 守护和已配对的飞书机器人已设为登录后自动运行。')
       break
     }
     case 'stop': {
@@ -185,7 +184,7 @@ async function main(): Promise<void> {
       console.log('IOTA 应用:', appPid ? `运行中（PID ${appPid}）` : '未运行')
       const relayOwners = await inspectRelayPort().catch(() => [])
       console.log('本地中继:', relayOwners.some((p) => isManagedRelayCommand(p.command)) ? '运行中' : '未运行')
-      if (relayOwners.length) console.log('18010 端口监听:', relayOwners.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(miner-agent 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
+      if (relayOwners.length) console.log('18010 端口监听:', relayOwners.map((p) => `PID ${p.pid} ${isManagedRelayCommand(p.command) ? '(ma 中继)' : '(其他程序)'}: ${p.command}`).join('；'))
       const services = await launchAgentStatus()
       console.log('守护服务:', services.guardian ? '运行中' : '已停止')
       console.log('飞书机器人:', services.feishu ? '运行中' : '已停止')
@@ -207,14 +206,14 @@ async function main(): Promise<void> {
         else identities.forEach((item, index) => console.log(`${item.minerId === current?.minerId ? '*' : ' '} ${index + 1}. ${item.minerId}（${item.walletName}/${item.hotkeyName}；${item.source}）${item.minerId === scan.recommendedMinerId ? ' [当前 IOTA 日志匹配]' : ''}`))
       } else if (action === 'select') {
         const index = Number(args[1])
-        if (!Number.isInteger(index) || index < 1 || index > identities.length) fail(`用法: miner-agent miner select <序号 1-${identities.length}>`)
+        if (!Number.isInteger(index) || index < 1 || index > identities.length) fail(`用法: ma miner select <序号 1-${identities.length}>`)
         const config = await loadFeishuConfig()
-        if (!config) fail('请先运行 miner-agent feishu setup')
+        if (!config) fail('请先运行 ma feishu setup')
         config.minerId = identities[index - 1]!.minerId
         const { atomicWriteJson } = await import('./fsutil.js')
         await atomicWriteJson(join(homedir(), '.miner-agent', 'feishu.json'), config)
         console.log(`已选择 Miner ID：${config.minerId}`)
-      } else fail('用法: miner-agent miner list | select <序号>')
+      } else fail('用法: ma miner list | select <序号>')
       break
     }
     case 'feishu': {
@@ -229,23 +228,23 @@ async function main(): Promise<void> {
           console.log('凭据已保存；自动发现的本机 Miner ID：')
           const configured = await loadFeishuConfig()
           for (const [index, identity] of identities.entries()) console.log(`${identity.minerId === configured?.minerId ? '*' : ' '} ${index + 1}. ${identity.minerId}（钱包 ${identity.walletName} / hotkey ${identity.hotkeyName}；来源：${identity.source}）`)
-          if (identities.length > 1) console.log('检测到多个本地钱包时，可用 miner-agent miner select <序号> 切换。')
-          console.log('下一步运行 miner-agent feishu connect，并在飞书中给机器人发任意单聊消息完成配对。')
+          if (identities.length > 1) console.log('检测到多个本地钱包时，可用 ma miner select <序号> 切换。')
+          console.log('下一步运行 ma feishu connect，并在飞书中给机器人发任意单聊消息完成配对。')
         } finally { terminal.close() }
       } else if (action === 'connect') {
         await runFeishuDiscovery()
       } else if (action === 'restart') {
         const feishu = await loadFeishuConfig()
-        if (!feishu?.chatId || feishu.allowedOpenIds.length === 0) fail('飞书未完成配对；先运行 miner-agent feishu connect。')
+        if (!feishu?.chatId || feishu.allowedOpenIds.length === 0) fail('飞书未完成配对；先运行 ma feishu connect。')
         await stopFeishuLaunchAgent()
         await new Promise((resolve) => setTimeout(resolve, 1000))
         await installFeishuLaunchAgent()
-        console.log('飞书后台服务已重启并重新加载当前 miner-agent 版本；IOTA 未重启。')
+        console.log('飞书后台服务已重启并重新加载当前 ma 版本；IOTA 未重启。')
       } else if (action === 'service' || (action === 'run' && feishuArgs.includes('service'))) {
         const config = await loadFeishuConfig()
-        if (!config) fail('请先运行 miner-agent feishu setup')
+        if (!config) fail('请先运行 ma feishu setup')
         await runFeishuBot(config.minerId)
-      } else fail('用法: miner-agent feishu setup | connect | restart')
+      } else fail('用法: ma feishu setup | connect | restart')
       break
     }
     default:
