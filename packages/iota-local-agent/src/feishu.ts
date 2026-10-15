@@ -293,7 +293,7 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   const ws = new WSClient({ appId: config.appId, appSecret: config.appSecret, domain: 'https://open.feishu.cn' })
   await ws.start({ eventDispatcher: dispatcher })
   await event('飞书机器人长连接已启动')
-  await client.im.v1.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: config.chatId, msg_type: 'interactive', content: JSON.stringify(controlCard()) } })
+  await sendText(client, config.chatId, 'IOTA miner-agent 已连接。可发送：状态、重启、收益。')
   console.log(`miner-agent Feishu bot connected; target chat ${config.chatId}`)
   while (true) {
     try { if (config.speedtestRecoveryEnabled !== false) await checkSpeedtestRecovery(client, config) }
