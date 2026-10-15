@@ -15,7 +15,7 @@ import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCred
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.1'
+const AGENT_VERSION = '0.2.2'
 
 function usage(): void {
   console.log(`miner-agent ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
@@ -208,7 +208,7 @@ async function main(): Promise<void> {
       break
     }
     case 'feishu': {
-      const action = args[0]
+      const [action, ...feishuArgs] = args
       if (action === 'setup') {
         const readline = await import('node:readline/promises')
         const terminal = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -224,11 +224,11 @@ async function main(): Promise<void> {
         } finally { terminal.close() }
       } else if (action === 'connect') {
         await runFeishuDiscovery()
-      } else if (action === 'service') {
+      } else if (action === 'service' || (action === 'run' && feishuArgs.includes('service'))) {
         const config = await loadFeishuConfig()
         if (!config) fail('请先运行 miner-agent feishu setup')
         await runFeishuBot(config.minerId)
-      } else fail('用法: miner-agent feishu setup | connect | service')
+      } else fail('用法: miner-agent feishu setup | connect')
       break
     }
     default:
