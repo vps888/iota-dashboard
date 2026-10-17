@@ -15,7 +15,7 @@ import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCred
 import { homedir } from 'node:os'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.9'
+const AGENT_VERSION = '0.2.10'
 
 function usage(): void {
   console.log(`ma ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制

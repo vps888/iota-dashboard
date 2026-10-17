@@ -7,7 +7,7 @@ macOS 本地 IOTA Train at Home 守护与飞书控制工具。只管理 IOTA，�
 ## 安装与启动
 
 ```bash
-npm install -g miner-agent@0.2.9
+npm install -g miner-agent@0.2.10
 ma install       # 设置登录后自动启动（守护；若飞书已配对也会启动机器人）
 ma start         # 启动 IOTA（已运行时不重复启动）
 ma status        # 查看 IOTA、守护与飞书状态

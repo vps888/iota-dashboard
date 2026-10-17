@@ -4,8 +4,9 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { appInstalled, startOptimized } from './launcher.js'
 import { CONFIG_PATH } from './paths.js'
+import { latestTraining } from './training-history.js'
 import { createOfficialClient } from './official.js'
-import { appExecutablePath, classify, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
+import { appExecutablePath, classify, execFileText, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
 import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
 import { AGENT_DIR, PROCESS_MONITOR_STATE_PATH, SPEEDTEST_ALERT_STATE_PATH } from './paths.js'
@@ -164,13 +165,21 @@ function relativeAge(ts: number, nowSec = Date.now() / 1000): string {
   return `${days}天前`
 }
 
+async function processUptimeSeconds(pid: number): Promise<number> {
+  const output = await execFileText('ps', ['-o', 'etime=', '-p', String(pid)])
+  const value = output.trim()
+  const match = /^(?:(\d+)-)?(?:(\d{1,2}):)?(\d{2}):(\d{2})$/.exec(value)
+  if (!match) throw new Error('无法解析进程运行时长')
+  return (Number(match[1] ?? 0) * 86400) + Number(match[2] ?? 0) * 3600 + Number(match[3]) * 60 + Number(match[4])
+}
+
 async function statusText(minerId: string): Promise<string> {
   const [rows, records, state, control] = await Promise.all([processes(), logRecords(), readState<GuardianState>(), health()])
   const appPath = appExecutablePath()
   const app = [...rows.values()].find((row) => row.command === appPath)
   const worker = [...rows.values()].filter((row) => row.command.startsWith(`${appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')}`) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
   const evidence = parseLogs(records, state)
-  const latestProductiveFromLogs = [...records].reverse().find((record) => /Starting FORWARD pass|after training forward pass/.test(record.line))
+  const historicalTraining = await latestTraining()
   const localState = classify(evidence, app?.pid ?? null, worker.length > 0, control, Date.now() / 1000)
   const client = createOfficialClient()
   const official = await client.lookupMiner(minerId)
@@ -190,7 +199,7 @@ async function statusText(minerId: string): Promise<string> {
     total: metrics.num_hotkeys_in_epochs[i] ?? null,
     uploaded: (metrics.weight_uploaded[i] ?? 0) > 0,
   })).filter((record) => record.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 10) : []
-  const latestEpochTs = epochRecords[0]?.ts ?? latestProductive?.timestamp ?? latestProductiveFromLogs?.t ?? evidence.trainingAt ?? null
+  const latestEpochTs = Math.max(epochRecords[0]?.ts ?? 0, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
   const isQueuedLocally = official.miner === null && (evidence.queueStatus === 'queued' || localState.status === 'queued')
   const officialStatus = official.status === 'contributing'
     ? '训练中'
@@ -225,9 +234,10 @@ async function statusText(minerId: string): Promise<string> {
       return `${modelPrefix} - ${run.runId}：${run.activeMiners}/${run.maxMiners}（剩余 ${run.slotsRemaining}）`
     }).join('\n')}`).join('\n') || '当前没有全网任务'
     : '全网任务信息暂不可用'
+  const processElapsed = app ? await processUptimeSeconds(app.pid).catch(() => null) : null
   const output = [
     headline,
-    `应用进程：${app ? `运行中，PID ${app.pid}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
+    `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
     ...(trainingLines.length ? [separator, '训练记录：', '轮次\t时间\t状态\t排名', ...trainingLines] : []),
     separator,
     `全网任务容量：\n${capacity}`,
@@ -253,6 +263,16 @@ async function earningsText(minerId: string): Promise<string> {
 }
 
 async function restartAndReport(traceText: string): Promise<string> {
+  // Recheck local evidence immediately before any destructive operation.
+  const [rows, records, previous, control] = await Promise.all([processes(), logRecords(), readState<GuardianState>(), health()])
+  const appPath = appExecutablePath()
+  const app = [...rows.values()].find((row) => row.command === appPath)
+  const evidence = parseLogs(records, previous)
+  const workers = [...rows.values()].some((row) => row.command.startsWith(appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
+  const current = classify(evidence, app?.pid ?? null, workers, control, Date.now() / 1000)
+  if (current.status !== 'queued' || !evidence.queueUpdatedAt || Date.now() / 1000 - evidence.queueUpdatedAt > 900) {
+    return `当前${current.description}，不建议自动重启；本次未执行重启。\n${updatedAt()}`
+  }
   manualRestartInProgress = true
   const result = async (text: string): Promise<string> => `${text}\n${updatedAt()}`
   if (!appInstalled()) { manualRestartInProgress = false; return result('重启失败：未找到 IOTA Train at Home.app。') }
@@ -377,7 +397,20 @@ export async function runFeishuBot(minerId: string): Promise<void> {
     await markAcknowledged(messageId)
     await event(`飞书命令已读确认：${traceText}`)
     try {
-      const result = command === 'status' ? await statusText(minerId) : command === 'restart' ? await restartAndReport(traceText) : await earningsText(minerId)
+      let result: string
+      if (command === 'status') {
+        result = await statusText(minerId)
+      } else if (command === 'restart') {
+        const current = await statusText(minerId)
+        const headline = current.split('\n', 1)[0] ?? ''
+        const activityName = /^状态：([^，；]+)/.exec(headline)?.[1] ?? '状态无法确认'
+        const queued = activityName === '排队中'
+        result = queued
+          ? await restartAndReport(traceText)
+          : `当前${activityName}，不建议自动重启；为保护 IOTA 进程，本次未执行重启。\n${updatedAt()}`
+      } else {
+        result = await earningsText(minerId)
+      }
       await event(`飞书命令执行成功：${traceText}`)
       await sendText(client, botConfig.chatId, result)
     } catch (error) {
