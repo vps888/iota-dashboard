@@ -136,33 +136,58 @@ async function monitorIotaProcesses(client: Client, config: FeishuCredentials): 
   }
 }
 
-function date(ts: number | null | undefined): string {
+export function date(ts: number | null | undefined): string {
   if (!ts || !Number.isFinite(ts)) return '—'
   const millis = ts > 100_000_000_000 ? ts : ts * 1000
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(millis))
   const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? '00'
-  return `${part('month')}月${part('day')}日 ${part('hour')}:${part('minute')}:${part('second')}`
+  return `${part('month')}/${part('day')} ${part('hour')}:${part('minute')}:${part('second')}`
 }
 function num(n: number | null | undefined, digits = 4): string {
   return typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('zh-CN', { maximumFractionDigits: digits }) : '—'
 }
 function updatedAt(): string { return `更新时间：${date(Date.now())}` }
-function dateMinute(ts: number | null | undefined): string {
+export function dateMinute(ts: number | null | undefined): string {
   if (!ts || !Number.isFinite(ts)) return '—'
   const millis = ts > 100_000_000_000 ? ts : ts * 1000
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(millis))
   const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? '00'
-  return `${part('month')}月${part('day')}日 ${part('hour')}:${part('minute')}`
+  return `${part('month')}/${part('day')} ${part('hour')}:${part('minute')}`
 }
-function relativeAge(ts: number, nowSec = Date.now() / 1000): string {
-  const days = Math.max(0, Math.floor((nowSec - ts) / 86400))
-  if (days === 0) return '今天'
-  if (days === 1) return '1天前'
-  return `${days}天前`
+type DashboardDetails = Awaited<ReturnType<ReturnType<typeof createOfficialClient>['queryDashboardDetails']>>
+
+export function trainingRows(details: DashboardDetails | null): string[] {
+  if (!details) return []
+  const { metrics, throughput, tokens } = details
+  const throughputByEpoch = new Map(throughput.epochs.map((epoch, i) => [epoch, throughput.throughputs[i]]))
+  const cumulativePoints = [...tokens.data_points].sort((a, b) => a.timestamp - b.timestamp)
+  const plain = (value: number | null | undefined, digits = 0): string =>
+    typeof value === 'number' && Number.isFinite(value) ? (digits ? value.toFixed(digits).replace(/\.?0+$/, '') : value.toFixed(0)) : '—'
+  return metrics.epochs.map((epoch, i) => ({
+    epoch, ts: metrics.timestamps[i] ?? 0,
+    tokens: metrics.token_counts[i], contribution: metrics.act_contribution_percs[i],
+    rank: metrics.activation_ranks[i], total: metrics.num_hotkeys_in_epochs[i],
+  })).filter((record) => record.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 10).map((record) => {
+    // Token totals are sampled independently; never use a future sample for a historical epoch.
+    const cumulative = cumulativePoints.filter((point) => point.timestamp <= record.ts).at(-1)
+    const contribution = typeof record.contribution === 'number' && Number.isFinite(record.contribution)
+      ? `${(record.contribution * 100).toFixed(2)}%` : '—'
+    const rank = record.rank !== undefined && record.rank > 0 ? `${record.rank}/${plain(record.total)}` : '—'
+    return `#${record.epoch}，${plain(record.tokens)}，${contribution}，${rank}，${plain(throughputByEpoch.get(record.epoch), 3)}，${plain(cumulative?.token_count)}，${dateMinute(record.ts)}`
+  })
+}
+
+export function statusTime(isTraining: boolean, sampleAt: number | null | undefined, lastTrainingAt: number | null): string {
+  return isTraining ? `采样：${date(sampleAt)}` : `最后训练：${date(lastTrainingAt)}`
+}
+
+export function taskLabel(runId: string | null, task: { tier: string } | null | undefined): string {
+  const tier = task?.tier === 'gold' ? 'Gold' : task?.tier === 'silver' ? 'Silver' : task?.tier === 'bronze' ? 'Bronze' : null
+  return `${runId || '—'}${tier ? `（${tier}）` : ''}`
 }
 
 async function processUptimeSeconds(pid: number): Promise<number> {
@@ -192,14 +217,8 @@ async function statusText(minerId: string): Promise<string> {
   const productivePoints = points.filter((point) => point.token_count > 0).sort((a, b) => b.timestamp - a.timestamp)
   const latestProductive = productivePoints[0]
   const metrics = details?.metrics
-  const epochRecords = metrics ? metrics.epochs.map((epoch, i) => ({
-    epoch,
-    ts: metrics.timestamps[i] ?? 0,
-    rank: metrics.activation_ranks[i] ?? null,
-    total: metrics.num_hotkeys_in_epochs[i] ?? null,
-    uploaded: (metrics.weight_uploaded[i] ?? 0) > 0,
-  })).filter((record) => record.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 10) : []
-  const latestEpochTs = Math.max(epochRecords[0]?.ts ?? 0, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
+  const lastProductiveEpochTs = metrics ? Math.max(0, ...metrics.timestamps.filter((_, i) => (metrics.token_counts[i] ?? 0) > 0)) : 0
+  const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
   const isQueuedLocally = official.miner === null && (evidence.queueStatus === 'queued' || localState.status === 'queued')
   const officialStatus = official.status === 'contributing'
     ? '训练中'
@@ -215,13 +234,9 @@ async function statusText(minerId: string): Promise<string> {
   const task = official.runId ? networkRuns?.find((run) => run.runId === official.runId) : null
   const headline = isQueuedLocally
     ? `状态：排队中${evidence.queuePosition === null ? '' : `，第 ${evidence.queuePosition} 位`}，最后训练：${date(latestEpochTs)}`
-    : `状态：${officialStatus}，任务：${task?.description || official.runId || '—'}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；采样：${date(official.miner?.sampleAt)}；上一次产出：${date(latestProductive?.timestamp)}`
+    : `状态：${officialStatus}，任务：${taskLabel(official.runId, task)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(official.status === 'contributing', official.miner?.sampleAt, latestEpochTs)}`
   const separator = '--------------------------------------------------'
-  const trainingLines = epochRecords.map((record) => {
-    const rank = record.rank !== null && record.rank > 0 ? `${record.rank} / ${record.total ?? '—'}` : '—'
-    const upload = record.uploaded ? 'weights uploaded' : 'weights not uploaded'
-    return `#${record.epoch}，${dateMinute(record.ts)}（${relativeAge(record.ts)}），${upload}，${rank}`
-  })
+  const trainingLines = trainingRows(details)
   const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [
     ['金级', 'Gold', (networkRuns ?? []).filter((run) => run.tier === 'gold')],
     ['银级', 'Silver', (networkRuns ?? []).filter((run) => run.tier === 'silver')],
@@ -238,7 +253,7 @@ async function statusText(minerId: string): Promise<string> {
   const output = [
     headline,
     `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
-    ...(trainingLines.length ? [separator, '训练记录：', '轮次\t时间\t状态\t排名', ...trainingLines] : []),
+    ...(trainingLines.length ? [separator, '训练记录：', '轮次\t训练Token\t贡献占比\t激活排名\t吞吐量\t累计Token\t统计采样', ...trainingLines] : []),
     separator,
     `全网任务容量：\n${capacity}`,
     separator,

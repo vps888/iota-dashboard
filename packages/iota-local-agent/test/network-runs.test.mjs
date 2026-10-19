@@ -37,10 +37,12 @@ test('Feishu status output includes requested compact labels and blank separator
   const { fileURLToPath } = await import('node:url')
   const { dirname, join } = await import('node:path')
   const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
-  for (const expected of ['状态：排队中', '应用进程：', '训练记录：', '轮次\\t时间\\t状态\\t排名', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
+  for (const expected of ['状态：排队中', '应用进程：', '训练记录：', '轮次\\t训练Token\\t贡献占比\\t激活排名\\t吞吐量\\t累计Token\\t统计采样', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
     assert.ok(source.includes(expected), `missing ${expected}`)
   }
-  assert.match(source, /dateMinute\(record\.ts\).*relativeAge\(record\.ts\).*upload.*rank/s)
+  assert.match(source, /taskLabel\(official\.runId, task\)/)
+  assert.doesNotMatch(source, /上一次产出|relativeAge/)
+  assert.match(source, /statusTime\(official\.status === 'contributing'/)
 })
 
 
@@ -127,4 +129,44 @@ test('low speedtest results only emit Feishu alerts and never trigger restart', 
   assert.match(source, /async function monitorSpeedtest[\s\S]*latest\.download < 1 && latest\.upload < 1[\s\S]*fanoutAgentAlert/)
   assert.match(source, /未自动重启，请检查后决定是否通过飞书手动「重启」/)
   assert.doesNotMatch(source, /function monitorSpeedtest[\s\S]*?\n}\n[\s\S]{0,100}startOptimized/)
+})
+
+test('status task and timestamps use the requested compact format', async () => {
+  const { date, dateMinute, statusTime, taskLabel } = await import('../dist/feishu.js')
+  const ts = Date.parse('2026-10-19T00:35:15Z') / 1000
+  assert.equal(taskLabel('4.13.7.12-tah', { tier: 'bronze' }), '4.13.7.12-tah（Bronze）')
+  assert.equal(taskLabel(null, null), '—')
+  assert.equal(date(ts), '10/19 08:35:15')
+  assert.equal(date(ts * 1000), '10/19 08:35:15')
+  assert.equal(dateMinute(ts), '10/19 08:35')
+  assert.equal(statusTime(true, ts, ts - 3600), '采样：10/19 08:35:15')
+  assert.equal(statusTime(false, ts, ts - 3600), '最后训练：10/19 07:35:15')
+  assert.equal(statusTime(false, ts, null), '最后训练：—')
+})
+
+test('training rows match throughput by epoch and cumulative totals by sample time', async () => {
+  const { trainingRows } = await import('../dist/feishu.js')
+  const ts = Date.parse('2026-10-19T01:07:00Z') / 1000
+  const details = {
+    metrics: {
+      epochs: [127, 128], timestamps: [ts - 3600, ts], token_counts: [0, 518400],
+      act_contribution_percs: [0, 0.012], activation_ranks: [0, 45], num_hotkeys_in_epochs: [77, 77],
+      uploaded_partition_percs: [], weight_uploaded: [],
+    },
+    throughput: { epochs: [128, 127], throughputs: [1144932.515, 1200], throughput_moving_avgs: [], timestamps: [] },
+    tokens: { data_points: [
+      { timestamp: ts + 60, token_count: 9999999 },
+      { timestamp: ts - 60, token_count: 1964800 },
+    ] },
+  }
+  assert.deepEqual(trainingRows(details), [
+    '#128，518400，1.20%，45/77，1144932.515，1964800，10/19 09:07',
+    '#127，0，0.00%，—，1200，—，10/19 08:07',
+  ])
+  details.throughput.epochs = []
+  details.metrics.act_contribution_percs = []
+  details.metrics.token_counts = []
+  details.tokens.data_points = []
+  assert.equal(trainingRows(details)[0], '#128，—，—，45/77，—，—，10/19 09:07')
+  assert.deepEqual(trainingRows(null), [])
 })
