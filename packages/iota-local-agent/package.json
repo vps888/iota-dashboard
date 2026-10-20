@@ -1,6 +1,6 @@
 {
   "name": "miner-agent",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Local IOTA Train at Home guardian with Feishu remote control",
   "license": "MIT",
   "type": "module",
