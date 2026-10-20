@@ -19,12 +19,18 @@ export interface Evidence {
   queuePosition: number | null
   queueUpdatedAt: number | null
   queueStatus: string | null
+  queueId?: string | null
+  queueStartedAt?: number | null
+  trainingUpdatedAt?: number | null
+  trainingPhase?: string | null
+  trainingRunId?: string | null
   trainingState: string | null
   trainingAt: number | null
   exitCode: number | null
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
+  p2pAnomalyAt?: number | null
   p2pAnomalyDetected: boolean
 }
 
@@ -144,6 +150,11 @@ export async function logRecords(): Promise<LogRecord[]> {
         if (match) {
           const t = parseLocalLogTimestamp(match[1]!)
           if (Number.isFinite(t)) records.push({ t, line })
+        } else {
+          const last = records.at(-1)
+          if (last?.line.includes('training.state accepted') && !last.line.includes('}') && last.line.length < 8192) {
+            last.line += `\n${line}`
+          }
         }
       }
     }
@@ -159,12 +170,18 @@ export function emptyEvidence(sessionStartedAt: number): Evidence {
     queuePosition: null,
     queueUpdatedAt: null,
     queueStatus: null,
+    queueId: null,
+    queueStartedAt: null,
+    trainingUpdatedAt: null,
+    trainingPhase: null,
+    trainingRunId: null,
     trainingState: null,
     trainingAt: null,
     exitCode: null,
     exitedAt: null,
     quitAt: null,
     fatal: false,
+    p2pAnomalyAt: null,
     p2pAnomalyDetected: false,
   }
 }
@@ -176,19 +193,25 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
   // Keep the latest session start across date-based log rotation; never fall back to an older date's start.
   const started = latestStart !== null ? Math.max(latestStart, previousStart) : previousStart
   const result = emptyEvidence(started)
-  // Queue/session evidence is durable across daily log rotation. The queue itself can outlive a restart.
-  if (started >= previousStart && previous.sessionStartedAt !== undefined) {
+  // Preserve evidence across rotation, never across a new miner session.
+  if (started === previousStart && previous.sessionStartedAt !== undefined) {
     Object.assign(result, {
+      lastActivityAt: previous.lastActivityAt ?? started,
       queuePosition: previous.queuePosition ?? null,
       queueUpdatedAt: previous.queueUpdatedAt ?? null,
       queueStatus: previous.queueStatus ?? null,
+      queueId: previous.queueId ?? null,
+      queueStartedAt: previous.queueStartedAt ?? null,
+      trainingUpdatedAt: previous.trainingUpdatedAt ?? null,
+      trainingPhase: previous.trainingPhase ?? null,
+      trainingRunId: previous.trainingRunId ?? null,
       trainingState: previous.trainingState ?? null,
       trainingAt: previous.trainingAt ?? null,
       exitCode: previous.exitCode ?? null,
       exitedAt: previous.exitedAt ?? null,
       quitAt: previous.quitAt ?? null,
       fatal: previous.fatal ?? false,
-      p2pAnomalyDetected: previous.p2pAnomalyDetected ?? false,
+      p2pAnomalyAt: previous.p2pAnomalyAt ?? null,
     })
   }
   for (const { t, line } of records) {
@@ -200,23 +223,31 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
       const payload = line.split('response:')[1] ?? ''
       const status = /['"]status['"]\s*:\s*['"]([^'"]+)/.exec(payload)
       const position = /['"]position['"]\s*:\s*(\d+)/.exec(payload)
-      if (status) {
+      if (status && t >= (result.queueUpdatedAt ?? 0)) {
+        const queueId = /['"]queue_id['"]\s*:\s*['"]([^'"]+)/.exec(payload)?.[1] ?? null
+        if (queueId && queueId !== result.queueId) result.queueStartedAt = t
+        result.queueId = queueId
         result.queueStatus = status[1]
         result.queuePosition = position ? Number(position[1]) : null
         result.queueUpdatedAt = t
       }
     }
-    const state = /training\.state accepted \{ state: '([^']+)'/.exec(line)
-    if (state) {
+    const state = /training\.state accepted\s*\{\s*state:\s*['"]([^'"]+)/.exec(line)
+    if (state && t >= (result.trainingUpdatedAt ?? 0)) {
       result.trainingState = state[1]
+      result.trainingUpdatedAt = t
+      result.trainingRunId = /runId:\s*['"]([^'"]+)/.exec(line)?.[1] ?? null
+      result.trainingPhase = /to LayerPhase\.([A-Z_]+)/.exec(line)?.[1] ?? null
       if (state[1] === 'training' || state[1] === 'training_tick') {
         result.trainingAt = t
+        if (t > (result.p2pAnomalyAt ?? 0)) result.p2pAnomalyAt = null
       } else if (state[1] === 'resetting' || state[1] === 'waiting_training') {
         result.trainingAt = null
       }
     }
     if (line.includes('Starting FORWARD pass') || line.includes('after training forward pass')) {
-      result.trainingAt = t
+      result.trainingAt = Math.max(result.trainingAt ?? 0, t)
+      if (t > (result.p2pAnomalyAt ?? 0)) result.p2pAnomalyAt = null
     }
     const exited = /miner process exited code=(\d+|null) signal=(\S+)/.exec(line)
     if (exited) {
@@ -230,9 +261,12 @@ export function parseLogs(records: LogRecord[], previous: Partial<GuardianState>
       result.fatal = true
     }
     if (/No p2p_node_ids found on any adjacent-layer peer|No routable peers for layer-\d+/i.test(line)) {
-      result.p2pAnomalyDetected = true
+      result.p2pAnomalyAt = t
     }
   }
+  // A successful forward pass after a peer warning is recovery evidence.
+  result.p2pAnomalyDetected = result.p2pAnomalyAt != null
+    && result.p2pAnomalyAt > (result.trainingAt ?? 0)
   return result
 }
 
@@ -270,6 +304,9 @@ export function classify(
   now: number,
 ): { status: StatusKind; description: string } {
   const started = evidence.sessionStartedAt
+  if (!appPid) {
+    return { status: 'paused', description: minerAlive ? 'IOTA 主程序未运行，仍有 main_pool 进程' : 'IOTA 主程序未运行，main_pool 未运行' }
+  }
   if (!started && !minerAlive) {
     return { status: 'paused', description: '尚未启动过矿工;先打开 IOTA 并点击 Start training' }
   }
@@ -306,7 +343,7 @@ export function classify(
     return { status: 'queued', description: base + (stale ? ';位置超过十五分钟未更新' : '') }
   }
   if (now - evidence.lastActivityAt > 1800) {
-    return { status: 'abnormal', description: '矿工三十分钟没有任何活动,且未处于排队状态' }
+    return { status: 'waiting', description: '已超过三十分钟未读到新活动日志；控制连接正常，当前训练和排队状态无法仅凭日志确认' }
   }
   return { status: 'waiting', description: '控制连接正常,等待注册、模型准备或训练任务' }
 }
@@ -317,12 +354,18 @@ export interface GuardianState {
   queuePosition: number | null
   queueUpdatedAt: number | null
   queueStatus: string | null
+  queueId?: string | null
+  queueStartedAt?: number | null
+  trainingUpdatedAt?: number | null
+  trainingPhase?: string | null
+  trainingRunId?: string | null
   trainingState: string | null
   trainingAt: number | null
   exitCode: number | null
   exitedAt: number | null
   quitAt: number | null
   fatal: boolean
+  p2pAnomalyAt?: number | null
   p2pAnomalyDetected: boolean
   updatedAt: string
   status: StatusKind

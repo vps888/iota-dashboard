@@ -13,9 +13,10 @@ import { fanoutAgentAlert, loadAgentConfig } from './feishu-alert.js'
 import { installLaunchAgent, installFeishuLaunchAgent, stopFeishuLaunchAgent, launchAgentStatus } from './launchagent.js'
 import { runFeishuDiscovery, runFeishuBot, loadFeishuConfig, configureFeishuCredentials } from './feishu.js'
 import { homedir } from 'node:os'
+import { guardianAlerts, confirmedAlerts } from './guardian-alerts.js'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.11'
+const AGENT_VERSION = '0.2.12'
 
 function usage(): void {
   console.log(`ma ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
@@ -70,9 +71,7 @@ async function poll(previous: Partial<GuardianState>, agentStartedAt: number): P
   const relayListener = relayListeners.find((listener) => isManagedRelayCommand(listener.command))
   const classified = classify(evidence, appPid, minerAlive, control, now)
   const status = classified.status
-  const description = evidence.p2pAnomalyDetected
-    ? `${classified.description};检测到 P2P 节点异常`
-    : classified.description
+  const description = classified.description
   const state: GuardianState = {
     ...evidence,
     orphanedWorkerCount: orphanedWorkers.size,
@@ -106,19 +105,14 @@ async function runGuardian(once: boolean): Promise<void> {
   const agentStartedAt = previous.agentStartedAt ?? Date.now() / 1000
   if (!once) await event('守护启动：每 30 秒检查 IOTA 进程、控制连接和日志；异常只发飞书告警，不自动重启。')
 
+  let previousAlertKeys = new Set<string>()
   while (true) {
     try {
       const { state } = await poll(previous, agentStartedAt)
       if (!once) {
-        const activeAlerts: Array<{ key: string; message: string }> = []
-        if (state.status === 'abnormal' || state.fatal) {
-          const key = `health:${state.sessionStartedAt}:${state.description}`
-          activeAlerts.push({ key, message: `IOTA 异常告警：${state.description}。未自动重启，请检查后决定是否通过飞书手动「重启」。` })
-        }
-        if (state.p2pAnomalyDetected) {
-          const key = `p2p:${state.sessionStartedAt}`
-          activeAlerts.push({ key, message: `IOTA P2P 异常告警：${state.description}。请检查后决定是否通过飞书手动「重启」。` })
-        }
+        const observedAlerts = guardianAlerts(state, Date.now() / 1000)
+        const activeAlerts = confirmedAlerts(observedAlerts, previousAlertKeys)
+        previousAlertKeys = new Set(observedAlerts.map((alert) => alert.key))
         if ((state.orphanedWorkerCount ?? 0) > 0) {
           const key = `orphaned-workers:${state.orphanedWorkerCount}`
           activeAlerts.push({ key, message: `IOTA 残留进程告警：检测到 ${state.orphanedWorkerCount} 个 main_pool 进程，主程序当前未运行。未自动重启；请检查后决定是否手动处理。` })
@@ -126,7 +120,7 @@ async function runGuardian(once: boolean): Promise<void> {
         const alertStatePath = `${LOCK_PATH}.alerts.json`
         let previouslyActive = new Set<string>()
         try { previouslyActive = new Set(JSON.parse(readFileSync(alertStatePath, 'utf8')) as string[]) } catch {}
-        const activeKeys = new Set(activeAlerts.map((alert) => alert.key))
+        const activeKeys = new Set([...previousAlertKeys, ...activeAlerts.map((alert) => alert.key)])
         const newlyActive = activeAlerts.filter((alert) => !previouslyActive.has(alert.key))
         if (newlyActive.length) {
           const feishu = await loadFeishuConfig()
@@ -160,6 +154,7 @@ async function runGuardian(once: boolean): Promise<void> {
         return
       }
     } catch (error) {
+      previousAlertKeys.clear()
       // 检查失败不等于矿工失败:监控出错时绝不重启 IOTA
       await event(`监控检查失败:${error instanceof Error ? error.message : String(error)};本轮不执行重启`)
       if (once) throw error

@@ -37,12 +37,12 @@ test('Feishu status output includes requested compact labels and blank separator
   const { fileURLToPath } = await import('node:url')
   const { dirname, join } = await import('node:path')
   const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
-  for (const expected of ['状态：排队中', '应用进程：', '训练记录：', '轮次\\t训练Token\\t贡献占比\\t激活排名\\t吞吐量\\t累计Token\\t统计采样', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
+  for (const expected of ['activityLabel(activity.kind)', '应用进程：', '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
     assert.ok(source.includes(expected), `missing ${expected}`)
   }
-  assert.match(source, /taskLabel\(official\.runId, task\)/)
+  assert.match(source, /taskLabel\(activity\?\.runId \?\? official\.runId, task\)/)
   assert.doesNotMatch(source, /上一次产出|relativeAge/)
-  assert.match(source, /statusTime\(official\.status === 'contributing'/)
+  assert.match(source, /statusTime\(activity\?\.kind === 'training'/)
 })
 
 
@@ -116,7 +116,7 @@ test('guardian and speedtest paths never automatically restart IOTA', async () =
   assert.doesNotMatch(cli, /decision\(|startOptimized\(\)[\s\S]{0,500}if \(.*abnormal/)
   assert.match(cli, /异常只发飞书告警，不自动重启/)
   assert.match(feishu, /queued\s*\? await restartAndReport\(traceText\)/)
-  assert.match(feishu, /不建议自动重启；为保护 IOTA 进程，本次未执行重启/)
+  assert.match(feishu, /手动重启未执行/)
   assert.doesNotMatch(feishu, /download < 1[\s\S]{0,300}startOptimized/)
   assert.doesNotMatch(guardian, /export function decision\(/)
 })
@@ -160,13 +160,21 @@ test('training rows match throughput by epoch and cumulative totals by sample ti
     ] },
   }
   assert.deepEqual(trainingRows(details), [
-    '#128，518400，1.20%，45/77，1144932.515，1964800，10/19 09:07',
-    '#127，0，0.00%，—，1200，—，10/19 08:07',
+    '#128   |   518.4K   |   1.20%   |   45/77   |   1.1M   |   2M   |   10/19 09:07',
+    '#127   |   0   |   0.00%   |   —   |   1.2K   |   —   |   10/19 08:07',
   ])
   details.throughput.epochs = []
   details.metrics.act_contribution_percs = []
   details.metrics.token_counts = []
   details.tokens.data_points = []
-  assert.equal(trainingRows(details)[0], '#128，—，—，45/77，—，—，10/19 09:07')
+  assert.equal(trainingRows(details)[0], '#128   |   —   |   —   |   45/77   |   —   |   —   |   10/19 09:07')
   assert.deepEqual(trainingRows(null), [])
+})
+
+
+test('compact training metrics use decimal K M G units with one decimal and boundary promotion', async () => {
+  const { compactMetric } = await import('../dist/feishu.js')
+  for (const [value, expected] of [[0, '0'], [60800, '60.8K'], [44800, '44.8K'], [1000, '1K'], [1500000, '1.5M'], [2400000000, '2.4G'], [999999, '1M'], [999, '999'], [12.34, '12.3'], [null, '—'], [undefined, '—'], [NaN, '—'], [Infinity, '—']]) {
+    assert.equal(compactMetric(value), expected)
+  }
 })

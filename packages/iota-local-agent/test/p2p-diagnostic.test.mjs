@@ -11,10 +11,10 @@ test('detects adjacent-layer P2P peer anomaly without initiating a restart', () 
   assert.equal(evidence.p2pAnomalyDetected, true)
 })
 
-test('recognizes no-routable-peer variants and retains the warning within the session', () => {
+test('recognizes no-routable-peer variants but does not trust a legacy latched boolean', () => {
   const prior = { ...emptyEvidence(now - 60), p2pAnomalyDetected: true }
   const evidence = parseLogs([], prior)
-  assert.equal(evidence.p2pAnomalyDetected, true)
+  assert.equal(evidence.p2pAnomalyDetected, false)
   const detected = parseLogs([
     { t: now - 2, line: '[2026-10-10 12:00:00.000] WARNING No routable peers for layer-1' },
   ], { sessionStartedAt: now - 60 })

@@ -4,6 +4,8 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { appInstalled, startOptimized } from './launcher.js'
 import { CONFIG_PATH } from './paths.js'
+import { activityLabel, formatDuration, resolveActivity, trackActivity } from './activity-monitor.js'
+import { recordStateChange, recordEpochContributions } from './local-history.js'
 import { latestTraining } from './training-history.js'
 import { createOfficialClient } from './official.js'
 import { appExecutablePath, classify, execFileText, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
@@ -136,6 +138,42 @@ async function monitorIotaProcesses(client: Client, config: FeishuCredentials): 
   }
 }
 
+async function monitorMinerActivity(config: FeishuCredentials): Promise<void> {
+  const [rows, records, previous] = await Promise.all([processes(), logRecords(), readState<GuardianState>()])
+  const evidence = parseLogs(records, previous)
+  const appRunning = [...rows.values()].some((row) => row.command === appExecutablePath())
+  const current = resolveActivity(config.minerId, evidence, appRunning, Date.now() / 1000)
+  await trackActivity(join(AGENT_DIR, 'activity-monitor-state.json'), current, async (before, after) => {
+    await recordStateChange(before, after)
+    const message = [
+      `IOTA 状态变化：${activityLabel(before.kind)} → ${activityLabel(after.kind)}`,
+      `上一状态持续：${formatDuration(after.observedAt - (before.startedAt ?? before.observedAt))}`,
+      `当前状态持续：${formatDuration(after.observedAt - (after.startedAt ?? after.observedAt))}`,
+      `各状态累计（自监控记录起）：${Object.entries(after.durations ?? {}).map(([kind, seconds]) => `${activityLabel(kind)} ${formatDuration(seconds)}`).join('；')}`,
+      `Miner ID：${after.minerId}`,
+      `任务：${after.runId ?? '尚未分配'}${after.kind === 'queued' && after.queuePosition !== null ? `；排队第 ${after.queuePosition} 位` : ''}`,
+      `依据：${after.source}`,
+      updatedAt(),
+    ].join('\n')
+    await fanoutAgentAlert(config, await loadAgentConfig(), message)
+    await event(`IOTA 状态变化已推送：${before.kind} -> ${after.kind}；run=${after.runId ?? '—'}`)
+  })
+}
+
+async function collectContributionHistory(minerId: string): Promise<void> {
+  const client = createOfficialClient()
+  const official = await client.lookupMiner(minerId)
+  const state = await readState<GuardianState>()
+  // Include the last known local run even when the current roster is unavailable.
+  const runIds = new Set([official.runId, state.trainingRunId].filter((id): id is string => Boolean(id)))
+  const results = await Promise.allSettled([...runIds].map(async (runId) => {
+    const details = await client.queryDashboardDetails(runId, minerId)
+    await recordEpochContributions(minerId, runId, details)
+  }))
+  const failed = results.find((result) => result.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
+}
+
 export function date(ts: number | null | undefined): string {
   if (!ts || !Number.isFinite(ts)) return '—'
   const millis = ts > 100_000_000_000 ? ts : ts * 1000
@@ -160,13 +198,25 @@ export function dateMinute(ts: number | null | undefined): string {
 }
 type DashboardDetails = Awaited<ReturnType<ReturnType<typeof createOfficialClient>['queryDashboardDetails']>>
 
+// Decimal SI units; G denotes billions rather than the locale-dependent B.
+export function compactMetric(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  const units = ['', 'K', 'M', 'G', 'T']
+  let scaled = Math.abs(value), unit = 0
+  while (scaled >= 1000 && unit < units.length - 1) { scaled /= 1000; unit++ }
+  scaled = Number(scaled.toFixed(1))
+  if (scaled >= 1000 && unit < units.length - 1) { scaled /= 1000; unit++ }
+  return `${value < 0 && scaled !== 0 ? '-' : ''}${scaled}${units[unit]}`
+}
+
 export function trainingRows(details: DashboardDetails | null): string[] {
   if (!details) return []
   const { metrics, throughput, tokens } = details
   const throughputByEpoch = new Map(throughput.epochs.map((epoch, i) => [epoch, throughput.throughputs[i]]))
   const cumulativePoints = [...tokens.data_points].sort((a, b) => a.timestamp - b.timestamp)
   const plain = (value: number | null | undefined, digits = 0): string =>
-    typeof value === 'number' && Number.isFinite(value) ? (digits ? value.toFixed(digits).replace(/\.?0+$/, '') : value.toFixed(0)) : '—'
+    typeof value === 'number' && Number.isFinite(value)
+      ? value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits }) : '—'
   return metrics.epochs.map((epoch, i) => ({
     epoch, ts: metrics.timestamps[i] ?? 0,
     tokens: metrics.token_counts[i], contribution: metrics.act_contribution_percs[i],
@@ -177,7 +227,7 @@ export function trainingRows(details: DashboardDetails | null): string[] {
     const contribution = typeof record.contribution === 'number' && Number.isFinite(record.contribution)
       ? `${(record.contribution * 100).toFixed(2)}%` : '—'
     const rank = record.rank !== undefined && record.rank > 0 ? `${record.rank}/${plain(record.total)}` : '—'
-    return `#${record.epoch}，${plain(record.tokens)}，${contribution}，${rank}，${plain(throughputByEpoch.get(record.epoch), 3)}，${plain(cumulative?.token_count)}，${dateMinute(record.ts)}`
+    return `#${record.epoch}   |   ${compactMetric(record.tokens)}   |   ${contribution}   |   ${rank}   |   ${compactMetric(throughputByEpoch.get(record.epoch))}   |   ${compactMetric(cumulative?.token_count)}   |   ${dateMinute(record.ts)}`
   })
 }
 
@@ -205,7 +255,6 @@ async function statusText(minerId: string): Promise<string> {
   const worker = [...rows.values()].filter((row) => row.command.startsWith(`${appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')}`) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
   const evidence = parseLogs(records, state)
   const historicalTraining = await latestTraining()
-  const localState = classify(evidence, app?.pid ?? null, worker.length > 0, control, Date.now() / 1000)
   const client = createOfficialClient()
   const official = await client.lookupMiner(minerId)
   const runId = official.runId
@@ -213,28 +262,16 @@ async function statusText(minerId: string): Promise<string> {
     runId ? client.queryDashboardDetails(runId, minerId).catch(() => null) : Promise.resolve(null),
     client.networkRuns().catch(() => null),
   ])
+  if (details && runId) await recordEpochContributions(minerId, runId, details)
   const points = details?.tokens.data_points ?? []
   const productivePoints = points.filter((point) => point.token_count > 0).sort((a, b) => b.timestamp - a.timestamp)
   const latestProductive = productivePoints[0]
   const metrics = details?.metrics
   const lastProductiveEpochTs = metrics ? Math.max(0, ...metrics.timestamps.filter((_, i) => (metrics.token_counts[i] ?? 0) > 0)) : 0
   const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
-  const isQueuedLocally = official.miner === null && (evidence.queueStatus === 'queued' || localState.status === 'queued')
-  const officialStatus = official.status === 'contributing'
-    ? '训练中'
-    : official.status === 'waiting'
-      ? '等待任务中'
-      : official.status === 'idle'
-        ? '未训练'
-        : official.status === 'not_found'
-          ? '官方名单未找到'
-          : official.status === 'refresh_interrupted'
-            ? '官方数据刷新中断'
-            : '状态待确认'
+  const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000)
   const task = official.runId ? networkRuns?.find((run) => run.runId === official.runId) : null
-  const headline = isQueuedLocally
-    ? `状态：排队中${evidence.queuePosition === null ? '' : `，第 ${evidence.queuePosition} 位`}，最后训练：${date(latestEpochTs)}`
-    : `状态：${officialStatus}，任务：${taskLabel(official.runId, task)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(official.status === 'contributing', official.miner?.sampleAt, latestEpochTs)}`
+  const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId, task)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
   const separator = '--------------------------------------------------'
   const trainingLines = trainingRows(details)
   const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [
@@ -253,7 +290,7 @@ async function statusText(minerId: string): Promise<string> {
   const output = [
     headline,
     `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
-    ...(trainingLines.length ? [separator, '训练记录：', '轮次\t训练Token\t贡献占比\t激活排名\t吞吐量\t累计Token\t统计采样', ...trainingLines] : []),
+    ...(trainingLines.length ? [separator, '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', trainingLines.join('\n')] : []),
     separator,
     `全网任务容量：\n${capacity}`,
     separator,
@@ -286,7 +323,7 @@ async function restartAndReport(traceText: string): Promise<string> {
   const workers = [...rows.values()].some((row) => row.command.startsWith(appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
   const current = classify(evidence, app?.pid ?? null, workers, control, Date.now() / 1000)
   if (current.status !== 'queued' || !evidence.queueUpdatedAt || Date.now() / 1000 - evidence.queueUpdatedAt > 900) {
-    return `当前${current.description}，不建议自动重启；本次未执行重启。\n${updatedAt()}`
+    return `手动重启未执行：${current.description}。安全策略仅允许在最近十五分钟确认排队时重启；不会自动重启。\n${updatedAt()}`
   }
   manualRestartInProgress = true
   const result = async (text: string): Promise<string> => `${text}\n${updatedAt()}`
@@ -422,7 +459,7 @@ export async function runFeishuBot(minerId: string): Promise<void> {
         const queued = activityName === '排队中'
         result = queued
           ? await restartAndReport(traceText)
-          : `当前${activityName}，不建议自动重启；为保护 IOTA 进程，本次未执行重启。\n${updatedAt()}`
+          : `手动重启未执行：官方查询结果为「${activityName}」，不能据此确认本地是否运行。安全策略仅允许在确认排队时重启；不会自动重启。\n${updatedAt()}`
       } else {
         result = await earningsText(minerId)
       }
@@ -460,12 +497,20 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   await event('飞书机器人长连接已启动')
   await sendText(client, botConfig.chatId, 'IOTA ma 已连接。可发送：状态、重启、收益。')
   console.log(`ma Feishu bot connected; target chat ${botConfig.chatId}`)
+  let nextHistoryCollectionAt = 0
   while (true) {
     try {
       const agentConfig = await loadAgentConfig()
       await monitorIotaProcesses(client, { ...config, ...agentConfig })
     }
     catch (error) { await event(`IOTA 进程监控失败：${error instanceof Error ? error.message : String(error)}`) }
+    try { await monitorMinerActivity({ ...config, minerId }) }
+    catch (error) { await event(`IOTA 状态变化监控失败：${error instanceof Error ? error.message : String(error)}`) }
+    if (Date.now() >= nextHistoryCollectionAt) {
+      nextHistoryCollectionAt = Date.now() + 300_000
+      try { await collectContributionHistory(minerId) }
+      catch (error) { await event(`历史贡献采集失败：${error instanceof Error ? error.message : String(error)}`) }
+    }
     await new Promise((resolve) => setTimeout(resolve, 30_000))
   }
 }
