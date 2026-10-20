@@ -40,6 +40,8 @@ test('Feishu status output includes requested compact labels and blank separator
   for (const expected of ['activityLabel(activity.kind)', '应用进程：', '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
     assert.ok(source.includes(expected), `missing ${expected}`)
   }
+  const statusSource = source.slice(source.indexOf('async function statusText('), source.indexOf('async function earningsText('))
+  assert.doesNotMatch(statusSource, /main_pool：|控制连接：/)
   assert.match(source, /taskLabel\(activity\?\.runId \?\? official\.runId, task\)/)
   assert.doesNotMatch(source, /上一次产出|relativeAge/)
   assert.match(source, /statusTime\(activity\?\.kind === 'training'/)
@@ -177,4 +179,13 @@ test('compact training metrics use decimal K M G units with one decimal and boun
   for (const [value, expected] of [[0, '0'], [60800, '60.8K'], [44800, '44.8K'], [1000, '1K'], [1500000, '1.5M'], [2400000000, '2.4G'], [999999, '1M'], [999, '999'], [12.34, '12.3'], [null, '—'], [undefined, '—'], [NaN, '—'], [Infinity, '—']]) {
     assert.equal(compactMetric(value), expected)
   }
+})
+
+
+test('earnings summary omits the minimum payout field', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../src/feishu.ts', import.meta.url), 'utf8')
+  const earnings = source.slice(source.indexOf('async function earningsText('), source.indexOf('async function restartAndReport('))
+  assert.match(earnings, /收益总览：/)
+  assert.doesNotMatch(earnings, /最低支付|totals\.data\.minimum_payout_amount/)
 })

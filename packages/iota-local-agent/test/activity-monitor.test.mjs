@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyEvidence, parseLogs } from '../dist/guardian.js'
-import { resolveActivity, trackActivity, formatDuration } from '../dist/activity-monitor.js'
+import { resolveActivity, trackActivity, formatDuration, activityTiming } from '../dist/activity-monitor.js'
 const base = { ...emptyEvidence(100), queueStartedAt: 110, queueUpdatedAt: 120, queueStatus: 'queued', queuePosition: 535 }
 const resolve = (e = base, running = true) => resolveActivity('miner', e, running, 1000)
 
@@ -57,4 +57,20 @@ test('only state changes push; durations persist across repeat polls, failures a
 test('durations use hours, minutes and seconds', () => {
   assert.equal(formatDuration(3661), '1小时1分1秒')
   assert.equal(formatDuration(30), '30秒')
+})
+
+
+test('status reads current state timer without changing baseline or suppressing transitions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ma-timing-'))
+  const path = join(dir, 'state.json')
+  const current = resolve()
+  try {
+    assert.equal(await activityTiming(path, current), null)
+    await trackActivity(path, current, async () => {})
+    assert.deepEqual(await activityTiming(path, { ...current, observedAt: 1065 }), { startedAt: 1000, elapsedSeconds: 65 })
+    assert.equal(await activityTiming(path, { ...current, kind: 'training' }), null)
+    assert.equal(await activityTiming(path, { ...current, minerId: 'other' }), null)
+    assert.equal(await activityTiming(path, { ...current, observedAt: 900 }), null)
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).startedAt, 1000)
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

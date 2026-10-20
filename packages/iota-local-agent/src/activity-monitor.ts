@@ -67,3 +67,15 @@ export async function trackActivity(path: string, current: ActivitySnapshot | nu
   // Failed delivery keeps the previous baseline and start time for retry.
   await writeFile(path, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
 }
+
+// Read-only: status queries must not reset timers or consume transition notifications.
+export async function activityTiming(path: string, current: ActivitySnapshot | null): Promise<{ startedAt: number; elapsedSeconds: number } | null> {
+  if (!current) return null
+  try {
+    const saved: ActivitySnapshot = JSON.parse(await readFile(path, 'utf8'))
+    if (saved.minerId !== current.minerId || saved.kind !== current.kind) return null
+    const startedAt = saved.startedAt ?? saved.observedAt
+    if (!Number.isFinite(startedAt) || startedAt > current.observedAt) return null
+    return { startedAt, elapsedSeconds: current.observedAt - startedAt }
+  } catch { return null }
+}

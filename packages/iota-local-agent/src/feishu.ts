@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { appInstalled, startOptimized } from './launcher.js'
 import { CONFIG_PATH } from './paths.js'
-import { activityLabel, formatDuration, resolveActivity, trackActivity } from './activity-monitor.js'
+import { activityLabel, activityTiming, formatDuration, resolveActivity, trackActivity } from './activity-monitor.js'
 import { recordStateChange, recordEpochContributions } from './local-history.js'
 import { latestTraining } from './training-history.js'
 import { createOfficialClient } from './official.js'
@@ -249,10 +249,9 @@ async function processUptimeSeconds(pid: number): Promise<number> {
 }
 
 async function statusText(minerId: string): Promise<string> {
-  const [rows, records, state, control] = await Promise.all([processes(), logRecords(), readState<GuardianState>(), health()])
+  const [rows, records, state] = await Promise.all([processes(), logRecords(), readState<GuardianState>()])
   const appPath = appExecutablePath()
   const app = [...rows.values()].find((row) => row.command === appPath)
-  const worker = [...rows.values()].filter((row) => row.command.startsWith(`${appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')}`) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
   const evidence = parseLogs(records, state)
   const historicalTraining = await latestTraining()
   const client = createOfficialClient()
@@ -272,6 +271,10 @@ async function statusText(minerId: string): Promise<string> {
   const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000)
   const task = official.runId ? networkRuns?.find((run) => run.runId === official.runId) : null
   const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId, task)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
+  const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity)
+  const timingLine = timing
+    ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自监控记录起）`
+    : '本状态持续时间：尚未建立计时，等待后台下一轮确认'
   const separator = '--------------------------------------------------'
   const trainingLines = trainingRows(details)
   const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [
@@ -289,7 +292,8 @@ async function statusText(minerId: string): Promise<string> {
   const processElapsed = app ? await processUptimeSeconds(app.pid).catch(() => null) : null
   const output = [
     headline,
-    `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}；main_pool：${worker.length} 个；控制连接：${control?.connected ? '正常' : '未连接'}`,
+    timingLine,
+    `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}`,
     ...(trainingLines.length ? [separator, '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', trainingLines.join('\n')] : []),
     separator,
     `全网任务容量：\n${capacity}`,
@@ -308,7 +312,7 @@ async function earningsText(minerId: string): Promise<string> {
   const items = history.data.timestamps.map((ts, i) => ({ ts, amount: history.data.alpha_amounts[i] ?? 0, status: history.data.statuses[i] ?? 'unknown' })).sort((a, b) => b.ts - a.ts)
   const lines = items.filter((item) => item.amount > 0).map((item) => `${date(item.ts)} | ${num(item.amount)} IOTA | ${item.status}`)
   return [
-    `收益总览：累计 ${num(totals.data.total_amount_earned)} IOTA；已支付 ${num(totals.data.total_amount_paid)}；待支付 ${num(totals.data.total_amount_pending)}；冻结 ${num(totals.data.total_amount_frozen)}；最低支付 ${num(totals.data.minimum_payout_amount)}`,
+    `收益总览：累计 ${num(totals.data.total_amount_earned)} IOTA；已支付 ${num(totals.data.total_amount_paid)}；待支付 ${num(totals.data.total_amount_pending)}；冻结 ${num(totals.data.total_amount_frozen)}`,
     '收益记录（最新在前）：', ...(lines.length ? lines : ['暂无记录']),
     updatedAt(),
   ].join('\n')
