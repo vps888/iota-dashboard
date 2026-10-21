@@ -262,7 +262,7 @@ async function statusText(minerId: string): Promise<string> {
   ])
   if (details && runId) await recordEpochContributions(minerId, runId, details)
   const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000, official)
-  const headline = activity?.kind === 'queued' ? '状态：排队中'
+  const headline = activity?.kind === 'queued' ? `状态：排队中${activity.queuePosition !== null ? `，第 ${activity.queuePosition} 位` : ''}`
     : `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}`
   const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity, records, evidence.sessionStartedAt)
   const timingLine = timing
