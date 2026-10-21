@@ -37,14 +37,16 @@ test('Feishu status output includes requested compact labels and blank separator
   const { fileURLToPath } = await import('node:url')
   const { dirname, join } = await import('node:path')
   const source = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../src/feishu.ts'), 'utf8')
-  for (const expected of ['activityLabel(activity.kind)', '应用进程：', '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', '--------------------------------------------------', '全网任务容量：', '更新时间：']) {
+  for (const expected of ['activityLabel(activity.kind)', '应用进程：', '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', '---------------------------------------', '全网任务容量：', '更新时间：']) {
     assert.ok(source.includes(expected), `missing ${expected}`)
   }
   const statusSource = source.slice(source.indexOf('async function statusText('), source.indexOf('async function earningsText('))
   assert.doesNotMatch(statusSource, /main_pool：|控制连接：/)
   assert.match(source, /taskLabel\(activity\?\.runId \?\? official\.runId\)/)
   assert.doesNotMatch(source, /上一次产出|relativeAge/)
-  assert.match(source, /statusTime\(activity\?\.kind === 'training'/)
+  assert.match(source, /activity\?\.kind === 'queued' \? '状态：排队中'/)
+  const status = source.slice(source.indexOf('async function statusText'), source.indexOf('async function statusText') + 3500)
+  assert.doesNotMatch(status, /最后训练|statusTime\(/)
 })
 
 

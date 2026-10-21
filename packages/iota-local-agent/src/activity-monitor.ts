@@ -51,17 +51,31 @@ export function resolveActivity(minerId: string, evidence: Evidence, appRunning:
   // Registration polls do not demote an established training state. A new
   // registration attempt or a newer non-success registration event can supersede it.
   const trainingIsCurrent = trainingAt > 0 && trainingAt >= (evidence.queueStartedAt ?? 0)
-    && (evidence.queueStatus === 'succeeded' || trainingAt >= registrationAt)
+    && (evidence.queueStatus === 'succeeded' || trainingAt >= registrationAt
+      || (evidence.queueStatus === 'queued' && !officialCurrent))
   if (trainingIsCurrent && evidence.trainingState) {
     const raw = evidence.trainingState
     const kind = raw === 'training_tick' ? 'training'
       : raw === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? raw : raw
     return snapshot(kind, `训练事件 state=${raw}${evidence.trainingPhase ? `；LayerPhase.${evidence.trainingPhase}` : ''}`)
   }
-  // Do not announce a queue downgrade on an incomplete/stale official lookup
-  // when local training evidence exists. null preserves the notification baseline.
-  if (official !== undefined && !officialCurrent && evidence.queueStatus === 'queued'
-    && evidence.trainingState && !['waiting_training', 'resetting'].includes(evidence.trainingState)) return null
+  // A new registration attempt can overlap the existing training worker. Keep
+  // the explicit local phase rather than discarding it on an API outage.
+  if (!officialCurrent && trainingAt > 0 && trainingAt <= now
+    && evidence.queueStatus === 'queued' && evidence.trainingState
+    && !['waiting_training', 'resetting'].includes(evidence.trainingState)) {
+    const raw = evidence.trainingState
+    const kind = raw === 'training_tick' ? 'training'
+      : raw === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? raw : raw
+    return snapshot(kind, `本地训练事件 state=${raw}；注册排队与训练并存，官方当前状态未确认`)
+  }
+  // Python worker forward-pass logs are also direct local training evidence;
+  // they do not require an Electron training.state event to be present.
+  if (evidence.trainingAt && evidence.trainingAt >= trainingAt
+    && evidence.trainingAt >= registrationAt
+    && evidence.trainingAt > (evidence.exitedAt ?? 0) && evidence.trainingAt > (evidence.quitAt ?? 0)) {
+    return snapshot('training', 'IOTA 工作进程日志：训练 forward pass')
+  }
   if (evidence.queueStatus && registrationAt > 0) {
     return { ...snapshot(evidence.queueStatus, `注册接口 status=${evidence.queueStatus}`), runId: null }
   }
@@ -110,6 +124,9 @@ export function appLogStartedAt(records: LogRecord[], current: ActivitySnapshot,
       kind = evidence.trainingState === 'training_tick' ? 'training'
         : evidence.trainingState === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? 'layer_state_change' : evidence.trainingState
       runId = evidence.trainingRunId ?? null
+    } else if (evidence.trainingAt === record.t) {
+      kind = 'training'
+      runId = last?.kind === 'training' ? last.runId : null
     } else if (evidence.queueUpdatedAt === record.t && evidence.queueStatus) {
       if (last && ['training', 'weights_uploading', 'merging_partitions'].includes(last.kind)) continue
       kind = evidence.queueStatus

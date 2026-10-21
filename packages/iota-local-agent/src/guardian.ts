@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { open, readFile, readdir, stat } from 'node:fs/promises'
 import http from 'node:http'
-import { existsSync } from 'node:fs'
+import { existsSync, readlinkSync } from 'node:fs'
 import { APP_BUNDLE_CANDIDATES, LOGS_DIR } from './paths.js'
 
 const INTERVAL_SEC = 30
@@ -99,22 +99,49 @@ export interface LogRecord {
   line: string
 }
 
-export function parseLocalLogTimestamp(value: string): number {
+export function hostTimeZone(): string {
+  // macOS /etc/localtime records the actual OS setting, unlike Intl's default
+  // which can be overridden by a parent process's TZ environment variable.
+  try {
+    const target = readlinkSync('/etc/localtime')
+    const zone = target.split('/zoneinfo/')[1]
+    if (zone) {
+      new Intl.DateTimeFormat('en', { timeZone: zone }).format()
+      return zone
+    }
+  } catch {}
+  return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+const LOG_TIME_ZONE = hostTimeZone()
+const logFormatters = new Map<string, Intl.DateTimeFormat>()
+export function parseLocalLogTimestamp(value: string, timeZone = LOG_TIME_ZONE): number {
   const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d+)$/.exec(value)
   if (!match) return Number.NaN
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText] = match
   const year = Number(yearText), month = Number(monthText), day = Number(dayText)
   const hour = Number(hourText), minute = Number(minuteText), second = Number(secondText)
   const millisecond = Number((fractionText ?? '').padEnd(3, '0').slice(0, 3))
-  // IOTA's naive log timestamps follow the miner host's local wall clock.
-  // Use the offset for the log's date (including DST), not a fixed UTC+8 offset
-  // or today's offset. Log filenames can use a different date/timezone.
-  const date = new Date(year, month - 1, day, hour, minute, second, millisecond)
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
-    || date.getHours() !== hour || date.getMinutes() !== minute || date.getSeconds() !== second) {
-    return Number.NaN
+  const wall = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
+  const check = new Date(wall)
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day
+    || hour > 23 || minute > 59 || second > 59) return Number.NaN
+  let formatter = logFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+    logFormatters.set(timeZone, formatter)
   }
-  return date.getTime() / 1000
+  const localWall = (at: number): number => {
+    const parts = Object.fromEntries(formatter!.formatToParts(new Date(at)).map(p => [p.type, p.value]))
+    return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second, millisecond)
+  }
+  let utc = wall
+  for (let i = 0; i < 4; i++) {
+    const delta = wall - localWall(utc)
+    if (delta === 0) return utc / 1000
+    utc += delta
+  }
+  // Reject nonexistent wall times during a spring DST transition.
+  return localWall(utc) === wall ? utc / 1000 : Number.NaN
 }
 
 export async function logRecords(): Promise<LogRecord[]> {

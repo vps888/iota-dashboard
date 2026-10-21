@@ -6,7 +6,6 @@ import { appInstalled, startOptimized } from './launcher.js'
 import { CONFIG_PATH } from './paths.js'
 import { activityLabel, activityTiming, formatDuration, resolveActivity, trackActivity } from './activity-monitor.js'
 import { recordStateChange, recordEpochContributions } from './local-history.js'
-import { latestTraining } from './training-history.js'
 import { createOfficialClient } from './official.js'
 import { appExecutablePath, classify, execFileText, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
 import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
@@ -254,7 +253,6 @@ async function statusText(minerId: string): Promise<string> {
   const appPath = appExecutablePath()
   const app = [...rows.values()].find((row) => row.command === appPath)
   const evidence = parseLogs(records, state)
-  const historicalTraining = await latestTraining()
   const client = createOfficialClient()
   const official = await client.lookupMiner(minerId)
   const runId = official.runId
@@ -263,19 +261,15 @@ async function statusText(minerId: string): Promise<string> {
     client.networkRuns().catch(() => null),
   ])
   if (details && runId) await recordEpochContributions(minerId, runId, details)
-  const points = details?.tokens.data_points ?? []
-  const productivePoints = points.filter((point) => point.token_count > 0).sort((a, b) => b.timestamp - a.timestamp)
-  const latestProductive = productivePoints[0]
-  const metrics = details?.metrics
-  const lastProductiveEpochTs = metrics ? Math.max(0, ...metrics.timestamps.filter((_, i) => (metrics.token_counts[i] ?? 0) > 0)) : 0
-  const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
   const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000, official)
-  const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
+  const headline = activity?.kind === 'queued' ? '状态：排队中'
+    : `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}`
   const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity, records, evidence.sessionStartedAt)
   const timingLine = timing
     ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自可识别记录起）`
-    : '本状态持续时间：未知（Agent 与 IOTA 日志均无可识别的状态起点）'
-  const separator = '--------------------------------------------------'
+    : activity ? '状态持续：未知（现有记录未能确定本状态起点）'
+      : '状态持续：未知（当前状态尚未确定，无法匹配计时）'
+  const separator = '---------------------------------------'
   const trainingLines = trainingRows(details)
   const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [
     ['金级', 'Gold', (networkRuns ?? []).filter((run) => run.tier === 'gold')],
@@ -293,6 +287,7 @@ async function statusText(minerId: string): Promise<string> {
   const output = [
     headline,
     timingLine,
+    `状态依据：${activity?.source ?? (records.length ? `已读取 ${records.length} 条 IOTA 日志，但未识别到可用的当前状态事件` : '未读到可解析的 IOTA 日志记录（不代表日志文件不存在）')}${official.warning ? `；${official.warning}` : ''}`,
     `应用进程：${app ? `运行中，PID ${app.pid}，进程时长：${processElapsed === null ? '未知' : `${(processElapsed / 3600).toFixed(1)} h`}` : '未运行'}`,
     ...(trainingLines.length ? [separator, '训练记录（最近 10 轮，最新在前）：', '轮次   |   训练 Token   |   贡献   |   激活排名   |   吞吐   |   累计 Token   |   采样', trainingLines.join('\n')] : []),
     separator,

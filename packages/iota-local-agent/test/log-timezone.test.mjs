@@ -19,7 +19,7 @@ for (const [zone, wall, iso] of [
   test(`log wall clock uses host timezone and date-specific DST: ${zone} ${wall}`, () => {
     const actual = runInZone(zone, `
       import { parseLocalLogTimestamp } from ${JSON.stringify(guardian)};
-      console.log(JSON.stringify(parseLocalLogTimestamp(${JSON.stringify(wall)})));
+      console.log(JSON.stringify(parseLocalLogTimestamp(${JSON.stringify(wall)}, ${JSON.stringify(zone)})));
     `)
     assert.equal(actual, Date.parse(iso) / 1000)
   })
@@ -30,8 +30,8 @@ test('live EDT forward pass supersedes legacy stale P2P state and is classified 
     import { parseLocalLogTimestamp, parseLogs, classify, emptyEvidence } from ${JSON.stringify(guardian)};
     const now = Date.parse('2026-10-21T02:11:16Z') / 1000;
     const evidence = parseLogs([
-      { t: parseLocalLogTimestamp('2026-10-20 22:10:56.769'), line: 'Starting FORWARD pass' },
-      { t: parseLocalLogTimestamp('2026-10-20 22:10:56.771'), line: 'after training forward pass' },
+      { t: parseLocalLogTimestamp('2026-10-20 22:10:56.769', 'America/New_York'), line: 'Starting FORWARD pass' },
+      { t: parseLocalLogTimestamp('2026-10-20 22:10:56.771', 'America/New_York'), line: 'after training forward pass' },
     ], { ...emptyEvidence(now - 86400), queueStatus: 'succeeded', p2pAnomalyDetected: true });
     console.log(JSON.stringify({ evidence, result: classify(evidence, 123, true,
       { ok: true, connected: true, expectedHostPid: 123 }, now) }));
@@ -75,4 +75,17 @@ test('invalid timestamps are rejected rather than normalized into another date',
       '2026-10-20 25:00:00.000'].map(s => Number.isNaN(parseLocalLogTimestamp(s)))));
   `)
   assert.deepEqual(result, [true, true, true])
+})
+
+test('default parser uses OS timezone even when parent injects a different TZ', () => {
+  const result = runInZone('Pacific/Honolulu', `
+    import { hostTimeZone, parseLocalLogTimestamp } from ${JSON.stringify(guardian)};
+    import { readlinkSync } from 'node:fs';
+    const zone = hostTimeZone();
+    console.log(JSON.stringify({zone, expectedZone: readlinkSync('/etc/localtime').split('/zoneinfo/')[1],
+      actual: parseLocalLogTimestamp('2026-10-21 13:00:00.000'),
+      explicit: parseLocalLogTimestamp('2026-10-21 13:00:00.000', zone)}));
+  `)
+  assert.equal(result.zone, result.expectedZone)
+  assert.equal(result.actual, result.explicit)
 })
