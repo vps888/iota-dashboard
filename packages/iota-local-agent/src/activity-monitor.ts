@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import type { Evidence } from './guardian.js'
+import { parseLogs, type Evidence, type LogRecord } from './guardian.js'
+import { join, dirname } from 'node:path'
 
 // Unknown future registration/state values are retained, not silently discarded.
 export type ActivityKind = string
@@ -10,7 +11,7 @@ export interface ActivitySnapshot {
   observedAt: number
   source: string
   queuePosition: number | null
-  startedAt?: number
+  startedAt?: number | null
   durations?: Record<string, number>
 }
 export const ACTIVITY_LABELS: Record<string, string> = {
@@ -82,22 +83,68 @@ export async function trackActivity(path: string, current: ActivitySnapshot | nu
   const sameMiner = previous?.minerId === current.minerId
   const changed = sameMiner && activityChanged(previous!, current)
   const durations = { ...(sameMiner ? previous?.durations : {}) }
-  const startedAt = sameMiner ? previous?.startedAt ?? previous!.observedAt : current.observedAt
-  if (changed) durations[previous!.kind] = (durations[previous!.kind] ?? 0) + Math.max(0, current.observedAt - startedAt)
-  const next = { ...current, startedAt: changed ? current.observedAt : startedAt, durations }
+  const knownStart = (value: ActivitySnapshot): number | null => value.startedAt === null ? null : value.startedAt ?? value.observedAt
+  const startedAt = sameMiner ? knownStart(previous!) ?? current.startedAt ?? null : current.startedAt ?? null
+  if (changed && startedAt !== null) durations[previous!.kind] = (durations[previous!.kind] ?? 0) + Math.max(0, current.observedAt - startedAt)
+  const next = { ...current, startedAt: changed ? current.startedAt ?? null : startedAt, durations }
   if (changed) await send({ ...previous!, startedAt }, next)
   // Failed delivery keeps the previous baseline and start time for retry.
   await writeFile(path, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
 }
 
-// Read-only: status queries must not reset timers or consume transition notifications.
-export async function activityTiming(path: string, current: ActivitySnapshot | null): Promise<{ startedAt: number; elapsedSeconds: number } | null> {
+// Replay only recognizable events in the latest app session. Registration polls
+// are not evidence of leaving an active training phase (the original queue bug).
+export function appLogStartedAt(records: LogRecord[], current: ActivitySnapshot, sessionStartedAt = 0): number | null {
+  const sorted = records.filter(r => Number.isFinite(r.t) && r.t <= current.observedAt).sort((a, b) => a.t - b.t)
+  const session = Math.max(sessionStartedAt, ...sorted.filter(r => r.line.includes('[iota-cli runIotaCli] Connecting to CHANNEL')).map(r => r.t))
+  let last: { kind: string; runId: string | null; at: number } | null = null
+  for (const record of sorted) {
+    if (record.t < session) continue
+    if (/miner process exited|\[iota-cli registerQuitHandler\] Closing IOTA Cli/.test(record.line)) {
+      last = { kind: 'stopped', runId: null, at: record.t }; continue
+    }
+    const evidence = parseLogs([record], { sessionStartedAt: session })
+    let kind: string | null = null
+    let runId: string | null = null
+    if (evidence.trainingUpdatedAt === record.t && evidence.trainingState) {
+      kind = evidence.trainingState === 'training_tick' ? 'training'
+        : evidence.trainingState === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? 'layer_state_change' : evidence.trainingState
+      runId = evidence.trainingRunId ?? null
+    } else if (evidence.queueUpdatedAt === record.t && evidence.queueStatus) {
+      if (last && ['training', 'weights_uploading', 'merging_partitions'].includes(last.kind)) continue
+      kind = evidence.queueStatus
+    }
+    if (kind && (!last || last.kind !== kind || (runId && last.runId !== runId))) last = { kind, runId, at: record.t }
+  }
+  return last?.kind === current.kind && (!current.runId || !last.runId || current.runId === last.runId) ? last.at : null
+}
+
+// Read-only: queries must not consume transition notifications. Prefer agent
+// records; only fall back to app logs when no compatible agent record exists.
+export async function activityTiming(path: string, current: ActivitySnapshot | null, records: LogRecord[] = [], sessionStartedAt = 0): Promise<{ startedAt: number; elapsedSeconds: number } | null> {
   if (!current) return null
+  const valid = (at: unknown): at is number => typeof at === 'number' && Number.isFinite(at) && at > 0 && at >= sessionStartedAt && at <= current.observedAt
+  const compatible = (value: ActivitySnapshot): boolean => value.minerId === current.minerId && value.kind === current.kind
+    && (!current.runId || !value.runId || value.runId === current.runId)
+  let startedAt: number | null = null
   try {
     const saved: ActivitySnapshot = JSON.parse(await readFile(path, 'utf8'))
-    if (saved.minerId !== current.minerId || saved.kind !== current.kind) return null
-    const startedAt = saved.startedAt ?? saved.observedAt
-    if (!Number.isFinite(startedAt) || startedAt > current.observedAt) return null
-    return { startedAt, elapsedSeconds: current.observedAt - startedAt }
-  } catch { return null }
+    const at = saved.startedAt === null ? null : saved.startedAt ?? saved.observedAt
+    if (compatible(saved) && valid(at)) startedAt = at
+  } catch {}
+  if (startedAt === null) {
+    try {
+      const rows = (await readFile(join(dirname(path), 'history', 'state-changes.jsonl'), 'utf8')).split('\n')
+      const events = rows.flatMap(line => {
+        try {
+          const row = JSON.parse(line)
+          return row.type === 'state_change' && row.minerId === current.minerId && typeof row.to === 'string' && valid(row.changedAt) ? [row] : []
+        } catch { return [] }
+      }).sort((a, b) => a.changedAt - b.changedAt)
+      const latest = events.at(-1)
+      if (latest && compatible({ ...latest, kind: latest.to }) && valid(latest.changedAt)) startedAt = latest.changedAt
+    } catch {}
+  }
+  if (startedAt === null) startedAt = appLogStartedAt(records, current, sessionStartedAt)
+  return startedAt === null ? null : { startedAt, elapsedSeconds: current.observedAt - startedAt }
 }

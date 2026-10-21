@@ -144,12 +144,14 @@ async function monitorMinerActivity(config: FeishuCredentials): Promise<void> {
   const appRunning = [...rows.values()].some((row) => row.command === appExecutablePath())
   const official = await createOfficialClient().lookupMiner(config.minerId).catch(() => null)
   const current = resolveActivity(config.minerId, evidence, appRunning, Date.now() / 1000, official)
+  const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), current, records, evidence.sessionStartedAt)
+  if (current) current.startedAt = timing?.startedAt ?? null
   await trackActivity(join(AGENT_DIR, 'activity-monitor-state.json'), current, async (before, after) => {
     await recordStateChange(before, after)
     const message = [
       `IOTA 状态变化：${activityLabel(before.kind)} → ${activityLabel(after.kind)}`,
       `变化时间：${date(after.observedAt)}`,
-      `上一状态持续：${formatDuration(after.observedAt - (before.startedAt ?? before.observedAt))}`,
+      `上一状态持续：${before.startedAt == null ? '未知' : formatDuration(after.observedAt - before.startedAt)}`,
       `Miner ID：${after.minerId}`,
       `任务：${after.runId ?? '尚未分配'}${after.kind === 'queued' && after.queuePosition !== null ? `；排队第 ${after.queuePosition} 位` : ''}`,
       `依据：${after.source}`,
@@ -269,10 +271,10 @@ async function statusText(minerId: string): Promise<string> {
   const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
   const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000, official)
   const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
-  const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity)
+  const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity, records, evidence.sessionStartedAt)
   const timingLine = timing
-    ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自监控记录起）`
-    : '本状态持续时间：尚未建立计时，等待后台下一轮确认'
+    ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自可识别记录起）`
+    : '本状态持续时间：未知（Agent 与 IOTA 日志均无可识别的状态起点）'
   const separator = '--------------------------------------------------'
   const trainingLines = trainingRows(details)
   const runGroups: Array<[string, string, NonNullable<typeof networkRuns>[number][]]> = [

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyEvidence, parseLogs } from '../dist/guardian.js'
@@ -33,20 +33,20 @@ test('only state changes push; durations persist across repeat polls, failures a
   const dir = await mkdtemp(join(tmpdir(), 'iota-activity-'))
   const path = join(dir, 'state.json'); const sent = []
   const send = async (before, after) => { sent.push([before, after]) }
-  const current = resolve()
+  const current = { ...resolve(), startedAt: 1000 }
   try {
     await trackActivity(path, current, send)
     await trackActivity(path, { ...current, observedAt: 1030, queuePosition: 10, runId: 'different' }, send)
     await trackActivity(path, null, send)
     assert.equal(sent.length, 0)
-    const confirmed = { ...current, kind: 'confirmed', observedAt: 1060 }
+    const confirmed = { ...current, kind: 'confirmed', observedAt: 1060, startedAt: 1060 }
     await assert.rejects(trackActivity(path, confirmed, async () => { throw Error('offline') }))
     assert.equal(JSON.parse(await readFile(path, 'utf8')).startedAt, 1000)
     await trackActivity(path, confirmed, send)
     assert.equal(sent[0][1].durations.queued, 60)
     assert.equal(sent[0][1].startedAt, 1060)
-    await trackActivity(path, { ...current, observedAt: 1090 }, send)
-    await trackActivity(path, { ...confirmed, observedAt: 1120 }, send)
+    await trackActivity(path, { ...current, observedAt: 1090, startedAt: 1090 }, send)
+    await trackActivity(path, { ...confirmed, observedAt: 1120, startedAt: 1120 }, send)
     assert.equal(sent[2][1].durations.queued, 90)
     assert.equal(sent[2][1].durations.confirmed, 30)
     await trackActivity(path, { ...confirmed, minerId: 'another', observedAt: 1150 }, send)
@@ -69,7 +69,7 @@ test('durations use hours, minutes and seconds', () => {
 test('status reads current state timer without changing baseline or suppressing transitions', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ma-timing-'))
   const path = join(dir, 'state.json')
-  const current = resolve()
+  const current = { ...resolve(), startedAt: 1000 }
   try {
     assert.equal(await activityTiming(path, current), null)
     await trackActivity(path, current, async () => {})
@@ -117,4 +117,53 @@ test('unreliable official lookups cannot cause a training-to-queued notification
 test('official outage still permits newer local training evidence and initial queuing', () => {
   assert.equal(resolveActivity('miner', { ...base, trainingState: 'training_tick', trainingUpdatedAt: 999 }, true, 1000, null).kind, 'training')
   assert.equal(resolveActivity('miner', base, true, 1000, null).kind, 'queued')
+})
+
+const tick = (t, run = 'run1') => ({ t, line: `training.state accepted { state: 'training_tick', runId: '${run}' }` })
+const reset = t => ({ t, line: "training.state accepted { state: 'resetting', runId: 'run1' }" })
+const training = { minerId: 'miner', kind: 'training', runId: 'run1', observedAt: 1000, source: 'official', queuePosition: null }
+test('timing prefers valid agent snapshot, then recognizable own history, then app logs', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ma-replay-'))
+  const path = join(dir, 'activity.json')
+  const records = [tick(100), tick(200), tick(900)]
+  try {
+    assert.deepEqual(await activityTiming(path, training, records), { startedAt: 100, elapsedSeconds: 900 })
+    await mkdir(join(dir, 'history'))
+    await writeFile(join(dir, 'history', 'state-changes.jsonl'), 'broken\n' + JSON.stringify({ type: 'state_change', minerId: 'miner', to: 'training', changedAt: 300, runId: 'run1' }) + '\n')
+    assert.equal((await activityTiming(path, training, records)).startedAt, 300)
+    await writeFile(path, JSON.stringify({ ...training, startedAt: 400 }))
+    assert.equal((await activityTiming(path, training, records)).startedAt, 400)
+    await writeFile(path, '{broken')
+    assert.equal((await activityTiming(path, training, records)).startedAt, 300)
+    assert.equal(await readFile(path, 'utf8'), '{broken')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+test('app replay respects continuous phases, run changes, restarts and missing evidence', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ma-replay-'))
+  const path = join(dir, 'activity.json')
+  const timing = records => activityTiming(path, training, records)
+  try {
+    assert.equal((await timing([tick(100), reset(300), tick(500), tick(900)])).startedAt, 500)
+    assert.equal((await timing([tick(100, 'old'), tick(400), tick(900)])).startedAt, 400)
+    assert.equal((await timing([tick(100), { t: 400, line: '[iota-cli runIotaCli] Connecting to CHANNEL' }, tick(600)])).startedAt, 600)
+    assert.equal(await timing([tick(100), { t: 400, line: '[iota-cli runIotaCli] Connecting to CHANNEL' }]), null)
+    assert.equal(await timing([]), null)
+    assert.equal(await timing([{ t: 100, line: 'unrecognized log' }]), null)
+    assert.equal(await timing([tick(1001)]), null)
+    assert.equal(await timing([tick(100), reset(900)]), null)
+    const queued = { t: 800, line: 'Successfully completed request to /miner/register response: {"status":"queued","position":685}' }
+    assert.equal((await timing([tick(100), queued, tick(900)])).startedAt, 100)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+test('background keeps unknown start unknown, recovers log start without consuming transitions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ma-unknown-'))
+  const path = join(dir, 'activity.json')
+  try {
+    await trackActivity(path, training, async () => {})
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).startedAt, null)
+    assert.equal(await activityTiming(path, training), null)
+    const recovered = await activityTiming(path, training, [tick(100), tick(900)])
+    await trackActivity(path, { ...training, startedAt: recovered.startedAt }, async () => {})
+    assert.equal((await activityTiming(path, training)).startedAt, 100)
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

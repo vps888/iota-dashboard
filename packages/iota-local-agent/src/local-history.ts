@@ -34,13 +34,13 @@ export function appendHistory(path: string, records: Array<{ id: string; [key: s
 }
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export async function recordStateChange(before: ActivitySnapshot, after: ActivitySnapshot, dir = HISTORY_DIR): Promise<void> {
-  const startedAt = before.startedAt ?? before.observedAt
+  const startedAt = before.startedAt === null ? null : before.startedAt ?? before.observedAt
   await appendHistory(join(dir, 'state-changes.jsonl'), [{
     id: hash([after.minerId, startedAt, before.kind, after.kind]),
     type: 'state_change', recordedAt: new Date(after.observedAt * 1000).toISOString(),
     minerId: after.minerId, from: before.kind, to: after.kind,
     previousStartedAt: startedAt, changedAt: after.observedAt,
-    previousDurationSeconds: Math.max(0, after.observedAt - startedAt),
+    previousDurationSeconds: startedAt === null ? null : Math.max(0, after.observedAt - startedAt),
     durations: after.durations ?? {}, runId: after.runId, queuePosition: after.queuePosition,
     source: after.source,
   }])

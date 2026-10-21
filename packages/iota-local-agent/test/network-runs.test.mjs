@@ -195,6 +195,6 @@ test('state change notifications show transition time and elapsed duration witho
   const source = await readFile(new URL('../src/feishu.ts', import.meta.url), 'utf8')
   const notification = source.slice(source.indexOf('async function monitorMinerActivity'), source.indexOf('function ', source.indexOf('async function monitorMinerActivity') + 40))
   assert.match(notification, /变化时间：\$\{date\(after.observedAt\)\}/)
-  assert.match(notification, /上一状态持续：\$\{formatDuration\(/)
+  assert.match(notification, /上一状态持续：\$\{before\.startedAt == null \? '未知' : formatDuration\(/)
   assert.doesNotMatch(notification, /各状态累计|当前状态持续|after\.durations/)
 })
