@@ -16,7 +16,7 @@ import { homedir } from 'node:os'
 import { guardianAlerts, confirmedAlerts } from './guardian-alerts.js'
 import { detectLocalMinerIds } from './identity.js'
 
-const AGENT_VERSION = '0.2.14'
+const AGENT_VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 
 function usage(): void {
   console.log(`ma ${AGENT_VERSION} - IOTA Train at Home 本地守护与飞书控制
@@ -165,6 +165,10 @@ async function runGuardian(once: boolean): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2)
+  if (command === '-v' || command === '--version') {
+    console.log(`ma ${AGENT_VERSION}`)
+    return
+  }
   switch (command) {
     case 'install': {
       if (!appInstalled()) fail('找不到官方 IOTA 应用。请先安装官方 IOTA Train at Home.app。')

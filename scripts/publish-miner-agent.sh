@@ -81,3 +81,9 @@ npm install --prefix "$VERIFY_DIR" --no-audit --no-fund "${PACKAGE_NAME}@${PACKA
 "$VERIFY_DIR/node_modules/.bin/ma" --help
 
 printf '\nVerified usable release: %s@%s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION"
+
+npm install -g miner-agent@latest
+
+ma -v
+
+ma feishu restart
