@@ -1,3 +1,4 @@
+import { CommandDeliveryDedup, commandCooldownMs } from './command-dedup.js'
 import { Client, EventDispatcher, WSClient, type CardActionEvent } from '@larksuiteoapi/node-sdk'
 import { readFile, readdir, stat, mkdir, chmod, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
@@ -158,6 +159,13 @@ async function monitorMinerActivity(config: FeishuCredentials): Promise<void> {
     ].join('\n')
     await fanoutAgentAlert(config, await loadAgentConfig(), message)
     await event(`IOTA 状态变化已推送：${before.kind} -> ${after.kind}；run=${after.runId ?? '—'}`)
+    // Failure of the supplementary snapshot must not resend an already delivered
+    // transition notification on every monitoring poll.
+    try {
+      await fanoutAgentAlert(config, await loadAgentConfig(), await statusText(config.minerId))
+    } catch (error) {
+      await event(`状态变化后状态信息推送失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   })
 }
 
@@ -425,6 +433,7 @@ export async function runFeishuBot(minerId: string): Promise<void> {
   const botConfig = config
   const client = new Client({ appId: botConfig.appId, appSecret: botConfig.appSecret, domain: 'https://open.feishu.cn' })
   const allowed = new Set(botConfig.allowedOpenIds)
+  const deliveries = new CommandDeliveryDedup()
   const handled = new Map<string, number>()
   const inFlight = new Set<string>()
   async function markAcknowledged(messageId: string): Promise<void> {
@@ -438,10 +447,11 @@ export async function runFeishuBot(minerId: string): Promise<void> {
     const now = Date.now()
     for (const [seen, expiry] of handled) if (expiry <= now) handled.delete(seen)
     if (command !== 'status' && command !== 'restart' && command !== 'earnings') return
-    // Merge repeated commands from the same user for one minute, including duplicate delivery paths.
+    if (!deliveries.claim(botConfig.chatId, trace.source, messageId, trace.eventId, now)) return
+    // Merge status/earnings for 20 seconds; restart retains its 60-second safety window.
     const key = `${botConfig.chatId}:${sender}:${command}`
     if (handled.has(key) || inFlight.has(key)) return
-    handled.set(key, now + 60_000)
+    handled.set(key, now + commandCooldownMs(command))
     inFlight.add(key)
     const traceText = `来源=${trace.source} event_id=${trace.eventId ?? '—'} message_id=${messageId || '—'} sender.open_id=${sender} chat_id=${trace.chatId ?? botConfig.chatId} chat_type=${trace.chatType ?? '—'} command=${command}`
     await event(`飞书命令收到：${traceText}`)

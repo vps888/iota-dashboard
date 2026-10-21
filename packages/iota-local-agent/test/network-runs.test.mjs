@@ -61,7 +61,7 @@ test('restart flow uses staged IOTA and main_pool shutdown, and commands are ack
   assert.doesNotMatch(source, /已收到「\$\{text\}」/)
   assert.doesNotMatch(source, /正在处理…/)
   assert.match(source, /const key = `\$\{botConfig\.chatId\}:\$\{sender\}:\$\{command\}`[\s\S]*if \(handled\.has\(key\) \\|\\| inFlight\.has\(key\)\) return/)
-  assert.match(source, /handled\.set\(key, now \+ 60_000\)/)
+  assert.match(source, /handled\.set\(key, now \+ commandCooldownMs\(command\)\)/)
   assert.match(source, /inFlight\.add\(key\)[\s\S]*inFlight\.delete\(key\)/)
 })
 
@@ -200,4 +200,11 @@ test('state change notifications show transition time and elapsed duration witho
   assert.match(notification, /变化时间：\$\{date\(after.observedAt\)\}/)
   assert.match(notification, /上一状态持续：\$\{before\.startedAt == null \? '未知' : formatDuration\(/)
   assert.doesNotMatch(notification, /各状态累计|当前状态持续|after\.durations/)
+})
+
+test('activity transition sends a separate full status after its notification', async () => {
+  const source = await readFile(new URL('../src/feishu.ts', import.meta.url), 'utf8')
+  const monitor = source.slice(source.indexOf('async function monitorMinerActivity'), source.indexOf('async function collectContributionHistory'))
+  assert.match(monitor, /await fanoutAgentAlert\(config, await loadAgentConfig\(\), message\)[\s\S]*await fanoutAgentAlert\(config, await loadAgentConfig\(\), await statusText\(config.minerId\)\)/)
+  assert.match(monitor, /catch \(error\)[\s\S]*状态变化后状态信息推送失败/)
 })
