@@ -55,8 +55,14 @@ test('only state changes push; durations persist across repeat polls, failures a
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 test('durations use hours, minutes and seconds', () => {
-  assert.equal(formatDuration(3661), '1小时1分1秒')
-  assert.equal(formatDuration(30), '30秒')
+  assert.equal(formatDuration(3661), '1:01:01')
+  assert.equal(formatDuration(30), '0:00:30')
+  assert.equal(formatDuration(6105), '1:41:45')
+  assert.equal(formatDuration(0), '0:00:00')
+  assert.equal(formatDuration(-1), '0:00:00')
+  assert.equal(formatDuration(60), '0:01:00')
+  assert.equal(formatDuration(3600), '1:00:00')
+  assert.equal(formatDuration(90061.9), '25:01:01')
 })
 
 

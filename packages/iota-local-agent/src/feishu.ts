@@ -147,9 +147,8 @@ async function monitorMinerActivity(config: FeishuCredentials): Promise<void> {
     await recordStateChange(before, after)
     const message = [
       `IOTA 状态变化：${activityLabel(before.kind)} → ${activityLabel(after.kind)}`,
+      `变化时间：${date(after.observedAt)}`,
       `上一状态持续：${formatDuration(after.observedAt - (before.startedAt ?? before.observedAt))}`,
-      `当前状态持续：${formatDuration(after.observedAt - (after.startedAt ?? after.observedAt))}`,
-      `各状态累计（自监控记录起）：${Object.entries(after.durations ?? {}).map(([kind, seconds]) => `${activityLabel(kind)} ${formatDuration(seconds)}`).join('；')}`,
       `Miner ID：${after.minerId}`,
       `任务：${after.runId ?? '尚未分配'}${after.kind === 'queued' && after.queuePosition !== null ? `；排队第 ${after.queuePosition} 位` : ''}`,
       `依据：${after.source}`,
@@ -235,9 +234,8 @@ export function statusTime(isTraining: boolean, sampleAt: number | null | undefi
   return isTraining ? `采样：${date(sampleAt)}` : `最后训练：${date(lastTrainingAt)}`
 }
 
-export function taskLabel(runId: string | null, task: { tier: string } | null | undefined): string {
-  const tier = task?.tier === 'gold' ? 'Gold' : task?.tier === 'silver' ? 'Silver' : task?.tier === 'bronze' ? 'Bronze' : null
-  return `${runId || '—'}${tier ? `（${tier}）` : ''}`
+export function taskLabel(runId: string | null): string {
+  return runId || '—'
 }
 
 async function processUptimeSeconds(pid: number): Promise<number> {
@@ -269,8 +267,7 @@ async function statusText(minerId: string): Promise<string> {
   const lastProductiveEpochTs = metrics ? Math.max(0, ...metrics.timestamps.filter((_, i) => (metrics.token_counts[i] ?? 0) > 0)) : 0
   const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
   const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000)
-  const task = official.runId ? networkRuns?.find((run) => run.runId === official.runId) : null
-  const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId, task)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
+  const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
   const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity)
   const timingLine = timing
     ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自监控记录起）`

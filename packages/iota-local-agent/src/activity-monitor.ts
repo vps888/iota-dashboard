@@ -51,7 +51,7 @@ export function activityChanged(previous: ActivitySnapshot, current: ActivitySna
 export function formatDuration(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds))
   const h = Math.floor(value / 3600), m = Math.floor(value % 3600 / 60), s = value % 60
-  return `${h ? `${h}小时` : ''}${h || m ? `${m}分` : ''}${s}秒`
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 export async function trackActivity(path: string, current: ActivitySnapshot | null, send: (previous: ActivitySnapshot, current: ActivitySnapshot) => Promise<void>): Promise<void> {
   if (!current) return

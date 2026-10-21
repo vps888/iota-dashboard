@@ -80,7 +80,6 @@ export async function processes(): Promise<Map<number, ProcessRow>> {
 }
 
 const STAMP_RE = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\]/
-const LOG_TIME_ZONE = 'Asia/Shanghai'
 
 async function tail(path: string, bytes: number): Promise<string> {
   const info = await stat(path)
@@ -107,22 +106,15 @@ export function parseLocalLogTimestamp(value: string): number {
   const year = Number(yearText), month = Number(monthText), day = Number(dayText)
   const hour = Number(hourText), minute = Number(minuteText), second = Number(secondText)
   const millisecond = Number((fractionText ?? '').padEnd(3, '0').slice(0, 3))
-  const desiredWall = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
-  const candidates = new Set<number>()
-  // IOTA CLI logs use China Standard Time (UTC+8), independent of the Mac display timezone.
-  for (const offsetMinutes of [480]) {
-    const candidate = desiredWall - offsetMinutes * 60_000
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: LOG_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-    }).formatToParts(new Date(candidate))
-    const get = (type: string) => Number(parts.find((item) => item.type === type)?.value)
-    const actualWall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'), millisecond)
-    if (actualWall === desiredWall) candidates.add(candidate)
+  // IOTA's naive log timestamps follow the miner host's local wall clock.
+  // Use the offset for the log's date (including DST), not a fixed UTC+8 offset
+  // or today's offset. Log filenames can use a different date/timezone.
+  const date = new Date(year, month - 1, day, hour, minute, second, millisecond)
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+    || date.getHours() !== hour || date.getMinutes() !== minute || date.getSeconds() !== second) {
+    return Number.NaN
   }
-  if (candidates.size) return Math.min(...candidates) / 1000
-  // Keep a host-local fallback only for invalid timestamps; valid IOTA logs match UTC+8 above.
-  return new Date(year, month - 1, day, hour, minute, second, millisecond).getTime() / 1000
+  return date.getTime() / 1000
 }
 
 export async function logRecords(): Promise<LogRecord[]> {
@@ -134,14 +126,14 @@ export async function logRecords(): Promise<LogRecord[]> {
       .map((name) => `${LOGS_DIR}/${name}`)
     const withMtime = await Promise.all(files.map(async (f) => ({ f, name: f.split('/').pop() ?? '', mtime: (await stat(f)).mtimeMs })))
     withMtime.sort((a, b) => b.mtime - a.mtime)
-    const currentDay = new Intl.DateTimeFormat('en-CA', { timeZone: LOG_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-    const currentDayFile = withMtime.find((item) => item.name === `${currentDay}-${kind}.log`)
-    // Read the complete current-day log for live queue/status data; older rotated
-    // logs are only session/activity evidence and can be bounded to reduce I/O.
+    // Read the newest file completely. Filenames may use UTC while log lines
+    // use local time, so matching a calendar date can truncate the live log.
+    const currentLog = withMtime[0]?.name
+    // Older rotated files are bounded session/activity evidence.
     for (const { f, name } of withMtime.slice(0, 3)) {
       const info = await stat(f).catch(() => null)
       if (!info) continue
-      const isCurrentLog = currentDayFile?.name === name
+      const isCurrentLog = currentLog === name
       const text = isCurrentLog
         ? await tail(f, info.size).catch(() => '')
         : await tail(f, 512 * 1024).catch(() => '')
@@ -341,6 +333,17 @@ export function classify(
     const stale = now - (evidence.queueUpdatedAt ?? 0) > 900
     const base = evidence.queuePosition !== null ? `官方排队第 ${evidence.queuePosition} 位` : '等待官方分配训练任务'
     return { status: 'queued', description: base + (stale ? ';位置超过十五分钟未更新' : '') }
+  }
+  const registrationDescriptions: Record<string, string> = {
+    confirming: '官方正在确认训练资格',
+    confirmed: '官方已确认训练资格，等待任务准备',
+    processing: '官方注册处理中，等待训练任务',
+    succeeded: '官方注册成功，等待训练活动',
+  }
+  const registrationDescription = registrationDescriptions[evidence.queueStatus ?? '']
+  if (registrationDescription) {
+    const stale = now - (evidence.queueUpdatedAt ?? 0) > 900
+    return { status: 'waiting', description: registrationDescription + (stale ? '；注册状态超过十五分钟未更新' : '') }
   }
   if (now - evidence.lastActivityAt > 1800) {
     return { status: 'waiting', description: '已超过三十分钟未读到新活动日志；控制连接正常，当前训练和排队状态无法仅凭日志确认' }

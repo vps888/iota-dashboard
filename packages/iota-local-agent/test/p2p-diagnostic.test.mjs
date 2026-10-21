@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { emptyEvidence, parseLogs, parseLocalLogTimestamp } from '../dist/guardian.js'
+import { emptyEvidence, parseLogs } from '../dist/guardian.js'
 
 const now = Date.parse('2026-10-10T12:00:00Z') / 1000
 
@@ -22,10 +22,6 @@ test('recognizes no-routable-peer variants but does not trust a legacy latched b
 })
 
 
-test('interprets naive IOTA log timestamps as China Standard Time', () => {
-  assert.equal(parseLocalLogTimestamp('2026-10-15 03:08:05.332'), Date.parse('2026-10-14T19:08:05.332Z') / 1000)
-  assert.equal(parseLocalLogTimestamp('2026-07-15 03:08:05.332'), Date.parse('2026-07-14T19:08:05.332Z') / 1000)
-})
 
 test('daily log rotation without a fresh connect record does not reset session or queue evidence', () => {
   const started = Date.parse('2026-10-15T10:00:00Z') / 1000

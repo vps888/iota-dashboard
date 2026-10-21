@@ -42,7 +42,7 @@ test('Feishu status output includes requested compact labels and blank separator
   }
   const statusSource = source.slice(source.indexOf('async function statusText('), source.indexOf('async function earningsText('))
   assert.doesNotMatch(statusSource, /main_pool：|控制连接：/)
-  assert.match(source, /taskLabel\(activity\?\.runId \?\? official\.runId, task\)/)
+  assert.match(source, /taskLabel\(activity\?\.runId \?\? official\.runId\)/)
   assert.doesNotMatch(source, /上一次产出|relativeAge/)
   assert.match(source, /statusTime\(activity\?\.kind === 'training'/)
 })
@@ -136,8 +136,8 @@ test('low speedtest results only emit Feishu alerts and never trigger restart', 
 test('status task and timestamps use the requested compact format', async () => {
   const { date, dateMinute, statusTime, taskLabel } = await import('../dist/feishu.js')
   const ts = Date.parse('2026-10-19T00:35:15Z') / 1000
-  assert.equal(taskLabel('4.13.7.12-tah', { tier: 'bronze' }), '4.13.7.12-tah（Bronze）')
-  assert.equal(taskLabel(null, null), '—')
+  assert.equal(taskLabel('4.13.7.12-tah'), '4.13.7.12-tah')
+  assert.equal(taskLabel(null), '—')
   assert.equal(date(ts), '10/19 08:35:15')
   assert.equal(date(ts * 1000), '10/19 08:35:15')
   assert.equal(dateMinute(ts), '10/19 08:35')
@@ -188,4 +188,13 @@ test('earnings summary omits the minimum payout field', async () => {
   const earnings = source.slice(source.indexOf('async function earningsText('), source.indexOf('async function restartAndReport('))
   assert.match(earnings, /收益总览：/)
   assert.doesNotMatch(earnings, /最低支付|totals\.data\.minimum_payout_amount/)
+})
+
+test('state change notifications show transition time and elapsed duration without cumulative totals', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../src/feishu.ts', import.meta.url), 'utf8')
+  const notification = source.slice(source.indexOf('async function monitorMinerActivity'), source.indexOf('function ', source.indexOf('async function monitorMinerActivity') + 40))
+  assert.match(notification, /变化时间：\$\{date\(after.observedAt\)\}/)
+  assert.match(notification, /上一状态持续：\$\{formatDuration\(/)
+  assert.doesNotMatch(notification, /各状态累计|当前状态持续|after\.durations/)
 })

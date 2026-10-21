@@ -59,3 +59,15 @@ test('health probe requires consecutive observations and reason changes do not c
   assert.equal(confirmedAlerts(second, new Set(first.map(a => a.key))).length, 1)
   assert.equal(first[0].key, second[0].key)
 })
+
+for (const queueStatus of ['confirming', 'confirmed', 'processing', 'succeeded']) {
+  test(`registration ${queueStatus} is not inactivity or a confirmed fault`, () => {
+    const evidence = { ...emptyEvidence(now - 86400), queueStatus, queueUpdatedAt: now - 1 }
+    const result = classify(evidence, 123, true, connected, now)
+    assert.equal(result.status, 'waiting')
+    assert.doesNotMatch(result.description, /三十分钟|未处于排队|无法仅凭日志/)
+    assert.deepEqual(guardianAlerts(state({ ...evidence, ...result }), now), [])
+    // Registration must never hide a real control failure.
+    assert.equal(classify(evidence, 123, true, null, now).status, 'abnormal')
+  })
+}
