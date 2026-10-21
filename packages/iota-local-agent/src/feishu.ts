@@ -142,7 +142,8 @@ async function monitorMinerActivity(config: FeishuCredentials): Promise<void> {
   const [rows, records, previous] = await Promise.all([processes(), logRecords(), readState<GuardianState>()])
   const evidence = parseLogs(records, previous)
   const appRunning = [...rows.values()].some((row) => row.command === appExecutablePath())
-  const current = resolveActivity(config.minerId, evidence, appRunning, Date.now() / 1000)
+  const official = await createOfficialClient().lookupMiner(config.minerId).catch(() => null)
+  const current = resolveActivity(config.minerId, evidence, appRunning, Date.now() / 1000, official)
   await trackActivity(join(AGENT_DIR, 'activity-monitor-state.json'), current, async (before, after) => {
     await recordStateChange(before, after)
     const message = [
@@ -266,7 +267,7 @@ async function statusText(minerId: string): Promise<string> {
   const metrics = details?.metrics
   const lastProductiveEpochTs = metrics ? Math.max(0, ...metrics.timestamps.filter((_, i) => (metrics.token_counts[i] ?? 0) > 0)) : 0
   const latestEpochTs = Math.max(lastProductiveEpochTs, latestProductive?.timestamp ?? 0, historicalTraining?.at ?? 0, evidence.trainingAt ?? 0) || null
-  const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000)
+  const activity = resolveActivity(minerId, evidence, Boolean(app), Date.now() / 1000, official)
   const headline = `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}${activity?.kind === 'queued' && evidence.queuePosition !== null ? `，第 ${evidence.queuePosition} 位` : ''}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}；${statusTime(activity?.kind === 'training', official.miner?.sampleAt, latestEpochTs)}`
   const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity)
   const timingLine = timing

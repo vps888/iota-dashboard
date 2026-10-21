@@ -80,3 +80,41 @@ test('status reads current state timer without changing baseline or suppressing 
     assert.equal(JSON.parse(await readFile(path, 'utf8')).startedAt, 1000)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
+
+const activeOfficial = {
+  stale: false, coverage: { successful: 8, total: 8 },
+  miner: { hotkey: 'miner', runId: 'official-run', isActive: true, sampleAt: 990 },
+}
+test('fresh official active roster overrides queued registration, without requiring throughput', () => {
+  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, trainingRunId: 'old-run', queueUpdatedAt: 995, queueStartedAt: 995 }
+  const current = resolveActivity('miner', evidence, true, 1000, activeOfficial)
+  assert.equal(current.kind, 'training')
+  assert.equal(current.runId, 'official-run')
+  assert.equal(current.queuePosition, null)
+  assert.match(current.source, /is_active=true/)
+  assert.equal(resolveActivity('miner', evidence, false, 1000, activeOfficial).kind, 'stopped')
+})
+test('official roster does not erase a newer explicit phase or reset', () => {
+  for (const [trainingState, trainingPhase, kind] of [
+    ['layer_state_change', 'WEIGHTS_UPLOADING', 'weights_uploading'],
+    ['resetting', null, 'resetting'], ['waiting_training', null, 'waiting_training'],
+  ]) {
+    const evidence = { ...base, trainingState, trainingPhase, trainingUpdatedAt: 999 }
+    assert.equal(resolveActivity('miner', evidence, true, 1000, activeOfficial).kind, kind)
+  }
+})
+test('unreliable official lookups cannot cause a training-to-queued notification', () => {
+  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, queueUpdatedAt: 995 }
+  for (const official of [null, { ...activeOfficial, stale: true },
+    { ...activeOfficial, coverage: { successful: 7, total: 8 } },
+    { ...activeOfficial, miner: null },
+    ...[null, 699, 1001].map(sampleAt => ({ ...activeOfficial, miner: { ...activeOfficial.miner, sampleAt } })),
+    { ...activeOfficial, miner: { ...activeOfficial.miner, hotkey: 'other' } },
+  ]) assert.equal(resolveActivity('miner', evidence, true, 1000, official), null)
+  const inactive = { ...activeOfficial, miner: { ...activeOfficial.miner, isActive: false } }
+  assert.equal(resolveActivity('miner', evidence, true, 1000, inactive).kind, 'queued')
+})
+test('official outage still permits newer local training evidence and initial queuing', () => {
+  assert.equal(resolveActivity('miner', { ...base, trainingState: 'training_tick', trainingUpdatedAt: 999 }, true, 1000, null).kind, 'training')
+  assert.equal(resolveActivity('miner', base, true, 1000, null).kind, 'queued')
+})

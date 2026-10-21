@@ -21,7 +21,13 @@ export const ACTIVITY_LABELS: Record<string, string> = {
 }
 export function activityLabel(kind: string): string { return ACTIVITY_LABELS[kind] ?? kind }
 
-export function resolveActivity(minerId: string, evidence: Evidence, appRunning: boolean, now: number): ActivitySnapshot | null {
+export interface OfficialActivityEvidence {
+  stale: boolean
+  coverage: { successful: number; total: number }
+  miner: { hotkey: string; runId: string; isActive: boolean; sampleAt: number | null } | null
+}
+
+export function resolveActivity(minerId: string, evidence: Evidence, appRunning: boolean, now: number, official?: OfficialActivityEvidence | null): ActivitySnapshot | null {
   const snapshot = (kind: string, source: string): ActivitySnapshot => ({
     minerId, kind, runId: evidence.trainingRunId ?? null, observedAt: now, source,
     queuePosition: kind === 'queued' ? evidence.queuePosition : null,
@@ -29,6 +35,18 @@ export function resolveActivity(minerId: string, evidence: Evidence, appRunning:
   if (!appRunning) return snapshot('stopped', '本机进程快照：IOTA 主程序未运行')
   const registrationAt = evidence.queueUpdatedAt ?? 0
   const trainingAt = evidence.trainingUpdatedAt ?? 0
+  const sample = official?.miner
+  const officialCurrent = official != null && !official.stale
+    && official.coverage.total > 0 && official.coverage.successful === official.coverage.total
+    && sample?.hotkey === minerId && sample.sampleAt != null
+    && Number.isFinite(sample.sampleAt) && sample.sampleAt <= now && now - sample.sampleAt <= 300
+  // The registration queue is not the training roster. A fresh active roster
+  // entry wins over registration polls, but not a newer explicit training phase.
+  if (officialCurrent && sample?.isActive) {
+    const explicitPhase = evidence.trainingState && evidence.trainingState !== 'training_tick'
+      && evidence.trainingState !== 'training' && trainingAt > sample.sampleAt!
+    if (!explicitPhase) return { ...snapshot('training', '官方任务名单 is_active=true'), runId: sample.runId }
+  }
   // Registration polls do not demote an established training state. A new
   // registration attempt or a newer non-success registration event can supersede it.
   const trainingIsCurrent = trainingAt > 0 && trainingAt >= (evidence.queueStartedAt ?? 0)
@@ -39,6 +57,10 @@ export function resolveActivity(minerId: string, evidence: Evidence, appRunning:
       : raw === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? raw : raw
     return snapshot(kind, `训练事件 state=${raw}${evidence.trainingPhase ? `；LayerPhase.${evidence.trainingPhase}` : ''}`)
   }
+  // Do not announce a queue downgrade on an incomplete/stale official lookup
+  // when local training evidence exists. null preserves the notification baseline.
+  if (official !== undefined && !officialCurrent && evidence.queueStatus === 'queued'
+    && evidence.trainingState && !['waiting_training', 'resetting'].includes(evidence.trainingState)) return null
   if (evidence.queueStatus && registrationAt > 0) {
     return { ...snapshot(evidence.queueStatus, `注册接口 status=${evidence.queueStatus}`), runId: null }
   }
