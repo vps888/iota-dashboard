@@ -42,7 +42,7 @@ MAX_ATTEMPTS=60
 SLEEP_SECONDS=10
 PACKAGE_METADATA=""
 for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
-  if PACKAGE_METADATA="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.tarball bin --json --registry=https://registry.npmjs.org/)" \
+  if PACKAGE_METADATA="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version dist.tarball bin --json --registry=https://registry.npmjs.org/ 2>/dev/null)" \
     && printf '%s' "$PACKAGE_METADATA" | node -e '
       let input = "";
       process.stdin.on("data", chunk => input += chunk);

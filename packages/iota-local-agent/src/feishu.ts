@@ -266,7 +266,7 @@ async function statusText(minerId: string): Promise<string> {
     : `状态：${activity ? activityLabel(activity.kind) : '状态待确认'}，任务：${taskLabel(activity?.runId ?? official.runId)}；吞吐：${num(official.miner?.throughput)}；激活：${num(official.miner?.activations, 0)}`
   const timing = await activityTiming(join(AGENT_DIR, 'activity-monitor-state.json'), activity, records, evidence.sessionStartedAt)
   const timingLine = timing
-    ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}（自可识别记录起）`
+    ? `本状态开始：${date(timing.startedAt)}；已持续：${formatDuration(timing.elapsedSeconds)}`
     : activity ? '状态持续：未知（现有记录未能确定本状态起点）'
       : '状态持续：未知（当前状态尚未确定，无法匹配计时）'
   const separator = '---------------------------------------'
