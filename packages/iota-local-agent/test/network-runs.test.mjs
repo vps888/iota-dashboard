@@ -120,7 +120,7 @@ test('guardian and speedtest paths never automatically restart IOTA', async () =
   const guardian = await readFile(join(root, 'guardian.ts'), 'utf8')
   assert.doesNotMatch(cli, /decision\(|startOptimized\(\)[\s\S]{0,500}if \(.*abnormal/)
   assert.match(cli, /异常只发飞书告警，不自动重启/)
-  assert.match(feishu, /queued\s*\? await restartAndReport\(traceText\)/)
+  assert.match(feishu, /result = await restartAndReport\(traceText\)/)
   assert.match(feishu, /手动重启未执行/)
   assert.doesNotMatch(feishu, /download < 1[\s\S]{0,300}startOptimized/)
   assert.doesNotMatch(guardian, /export function decision\(/)
@@ -207,4 +207,29 @@ test('activity transition sends a separate full status after its notification', 
   const monitor = source.slice(source.indexOf('async function monitorMinerActivity'), source.indexOf('async function collectContributionHistory'))
   assert.match(monitor, /await fanoutAgentAlert\(config, await loadAgentConfig\(\), message\)[\s\S]*await fanoutAgentAlert\(config, await loadAgentConfig\(\), await statusText\(config.minerId\)\)/)
   assert.match(monitor, /catch \(error\)[\s\S]*状态变化后状态信息推送失败/)
+})
+
+
+test('manual restart checks local processes and logs, not official status text', async () => {
+  const { localRestartBlockReason } = await import('../dist/feishu.js')
+  const { emptyEvidence } = await import('../dist/guardian.js')
+  const e = emptyEvidence(100)
+  assert.equal(localRestartBlockReason(e, false, false, 1000), null)
+  assert.equal(localRestartBlockReason(e, false, true, 1000), null)
+  assert.match(localRestartBlockReason(e, true, false, 1000), /主程序仍在运行.*日志中没有.*无法确认是否正在训练.*未执行重启/)
+  assert.match(localRestartBlockReason(e, true, true, 1000), /检测到 worker 进程.*无法确认是否正在训练/)
+  const queued = { ...e, queueStatus: 'queued', queueUpdatedAt: 200, queuePosition: 42 }
+  assert.equal(localRestartBlockReason(queued, true, true, 1000), null)
+  assert.equal(localRestartBlockReason(queued, true, true, 100000), null)
+  const training = { ...queued, trainingState: 'training_tick', trainingUpdatedAt: 300, trainingAt: 300 }
+  assert.match(localRestartBlockReason(training, true, true, 1000), /训练中/)
+  assert.equal(localRestartBlockReason(training, false, true, 1000), null)
+  assert.equal(localRestartBlockReason({ ...training, queueUpdatedAt: 400 }, true, true, 1000), null)
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../src/feishu.ts', import.meta.url), 'utf8')
+  const branch = source.slice(source.indexOf("} else if (command === 'restart')"), source.indexOf('result = await earningsText'))
+  assert.doesNotMatch(branch, /statusText|官方|headline/)
+  const restart = source.slice(source.indexOf('async function restartAndReport('), source.indexOf('async function waitForSpeedtest('))
+  assert.doesNotMatch(restart, /createOfficialClient|statusText|health\(|classify\(/)
+  assert.match(restart, /await killIotaWorkersNow\(\)[\s\S]*await startOptimized\(\)/)
 })

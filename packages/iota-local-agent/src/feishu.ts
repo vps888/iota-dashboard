@@ -8,7 +8,7 @@ import { CONFIG_PATH } from './paths.js'
 import { activityLabel, activityTiming, formatDuration, resolveActivity, trackActivity } from './activity-monitor.js'
 import { recordStateChange, recordEpochContributions } from './local-history.js'
 import { createOfficialClient } from './official.js'
-import { appExecutablePath, classify, execFileText, health, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
+import { appExecutablePath, execFileText, iotaProcessSnapshot, logRecords, parseLogs, processes, type GuardianState } from './guardian.js'
 import { terminateIotaAppNow, killIotaWorkersNow } from './guardian.js'
 import { readState, event } from './state.js'
 import { AGENT_DIR, PROCESS_MONITOR_STATE_PATH, SPEEDTEST_ALERT_STATE_PATH } from './paths.js'
@@ -321,17 +321,24 @@ async function earningsText(minerId: string): Promise<string> {
   ].join('\n')
 }
 
+export function localRestartBlockReason(evidence: Parameters<typeof resolveActivity>[1], appRunning: boolean, workersRunning: boolean, now: number): string | null {
+  // No app: allow recovery; the restart flow cleans orphaned workers before launch.
+  if (!appRunning) return null
+  const activity = resolveActivity('local', evidence, true, now, null)
+  if (activity?.kind === 'queued') return null
+  if (!activity) return `本地 IOTA 主程序仍在运行${workersRunning ? '，且检测到 worker 进程' : ''}，但本地日志中没有可用于判断当前训练或排队状态的有效事件；无法确认是否正在训练，为避免误杀训练进程，未执行重启`
+  return `本地 IOTA 进程正在运行；本地日志状态为「${activityLabel(activity.kind)}」，未确认排队，为避免中断训练未执行重启`
+}
+
 async function restartAndReport(traceText: string): Promise<string> {
-  // Recheck local evidence immediately before any destructive operation.
-  const [rows, records, previous, control] = await Promise.all([processes(), logRecords(), readState<GuardianState>(), health()])
+  // Recheck local processes and logs immediately before any destructive operation.
+  const [rows, records, previous] = await Promise.all([processes(), logRecords(), readState<GuardianState>()])
   const appPath = appExecutablePath()
   const app = [...rows.values()].find((row) => row.command === appPath)
   const evidence = parseLogs(records, previous)
   const workers = [...rows.values()].some((row) => row.command.startsWith(appPath.replace('/Contents/MacOS/IOTA Train at Home', '/Contents/Frameworks/iota-cli/main_pool')) || row.command.startsWith('main_pool:ai.macrocosmos.iota.tah.worker'))
-  const current = classify(evidence, app?.pid ?? null, workers, control, Date.now() / 1000)
-  if (current.status !== 'queued' || !evidence.queueUpdatedAt || Date.now() / 1000 - evidence.queueUpdatedAt > 900) {
-    return `手动重启未执行：${current.description}。安全策略仅允许在最近十五分钟确认排队时重启；不会自动重启。\n${updatedAt()}`
-  }
+  const blocked = localRestartBlockReason(evidence, Boolean(app), workers, Date.now() / 1000)
+  if (blocked) return `手动重启未执行：${blocked}。\n${updatedAt()}`
   manualRestartInProgress = true
   const result = async (text: string): Promise<string> => `${text}\n${updatedAt()}`
   if (!appInstalled()) { manualRestartInProgress = false; return result('重启失败：未找到 IOTA Train at Home.app。') }
@@ -462,13 +469,7 @@ export async function runFeishuBot(minerId: string): Promise<void> {
       if (command === 'status') {
         result = await statusText(minerId)
       } else if (command === 'restart') {
-        const current = await statusText(minerId)
-        const headline = current.split('\n', 1)[0] ?? ''
-        const activityName = /^状态：([^，；]+)/.exec(headline)?.[1] ?? '状态无法确认'
-        const queued = activityName === '排队中'
-        result = queued
-          ? await restartAndReport(traceText)
-          : `手动重启未执行：官方查询结果为「${activityName}」，不能据此确认本地是否运行。安全策略仅允许在确认排队时重启；不会自动重启。\n${updatedAt()}`
+        result = await restartAndReport(traceText)
       } else {
         result = await earningsText(minerId)
       }
