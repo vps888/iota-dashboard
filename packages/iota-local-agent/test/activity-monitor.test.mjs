@@ -24,7 +24,7 @@ test('training ticks normalize; explicit phase events and registration transitio
   assert.equal(resolve(evidence).kind, 'training')
   assert.equal(resolve({ ...evidence, queueStatus: 'succeeded', queueUpdatedAt: 150 }).kind, 'training')
   assert.equal(resolve({ ...evidence, queueStatus: 'failed', queueUpdatedAt: 150 }).kind, 'failed')
-  assert.equal(resolve({ ...evidence, queueStatus: 'queued', queueUpdatedAt: 160, queueStartedAt: 160 }).kind, 'training')
+  assert.equal(resolve({ ...evidence, queueStatus: 'queued', queueUpdatedAt: 160, queueStartedAt: 160 }).kind, 'queued')
   for (const raw of ['waiting_training', 'resetting']) {
     assert.equal(resolve({ ...evidence, trainingState: raw }).kind, raw)
   }
@@ -86,7 +86,7 @@ const activeOfficial = {
   miner: { hotkey: 'miner', runId: 'official-run', isActive: true, sampleAt: 990 },
 }
 test('fresh official active roster overrides queued registration, without requiring throughput', () => {
-  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, trainingRunId: 'old-run', queueUpdatedAt: 995, queueStartedAt: 995 }
+  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, trainingRunId: 'old-run', queueUpdatedAt: 980, queueStartedAt: 980 }
   const current = resolveActivity('miner', evidence, true, 1000, activeOfficial)
   assert.equal(current.kind, 'training')
   assert.equal(current.runId, 'official-run')
@@ -103,14 +103,14 @@ test('official roster does not erase a newer explicit phase or reset', () => {
     assert.equal(resolveActivity('miner', evidence, true, 1000, activeOfficial).kind, kind)
   }
 })
-test('unreliable official lookups retain recognized local training instead of queue downgrade', () => {
-  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, queueUpdatedAt: 995 }
+test('newer queued logs override old training regardless of unreliable official lookups', () => {
+  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 940, queueUpdatedAt: 995 }
   for (const official of [null, { ...activeOfficial, stale: true },
     { ...activeOfficial, coverage: { successful: 7, total: 8 } },
     { ...activeOfficial, miner: null },
     ...[null, 699, 1001].map(sampleAt => ({ ...activeOfficial, miner: { ...activeOfficial.miner, sampleAt } })),
     { ...activeOfficial, miner: { ...activeOfficial.miner, hotkey: 'other' } },
-  ]) assert.equal(resolveActivity('miner', evidence, true, 1000, official).kind, 'training')
+  ]) assert.equal(resolveActivity('miner', evidence, true, 1000, official).kind, 'queued')
   const inactive = { ...activeOfficial, miner: { ...activeOfficial.miner, isActive: false } }
   assert.equal(resolveActivity('miner', evidence, true, 1000, inactive).kind, 'queued')
 })
@@ -152,7 +152,8 @@ test('app replay respects continuous phases, run changes, restarts and missing e
     assert.equal(await timing([tick(1001)]), null)
     assert.equal(await timing([tick(100), reset(900)]), null)
     const queued = { t: 800, line: 'Successfully completed request to /miner/register response: {"status":"queued","position":685}' }
-    assert.equal((await timing([tick(100), queued, tick(900)])).startedAt, 100)
+    assert.equal((await timing([tick(100), queued, tick(900)])).startedAt, 900)
+    assert.equal(await timing([tick(100), queued]), null)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 test('background keeps unknown start unknown, recovers log start without consuming transitions', async () => {
@@ -168,13 +169,13 @@ test('background keeps unknown start unknown, recovers log start without consumi
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('local training survives newer queue polls and new queue attempts during official outage', () => {
+test('new queue logs supersede training ticks during official outage', () => {
   for (const queueStartedAt of [110, 995]) {
-    const evidence = { ...base, queueStartedAt, queueUpdatedAt: 995, trainingState: 'training_tick', trainingUpdatedAt: 140, trainingRunId: 'run1' }
+    const evidence = { ...base, queueStartedAt, queueUpdatedAt: 995, trainingState: 'training_tick', trainingUpdatedAt: 940, trainingRunId: 'run1' }
     const current = resolveActivity('miner', evidence, true, 1000, null)
-    assert.equal(current.kind, 'training')
-    assert.equal(current.runId, 'run1')
-    assert.equal(current.queuePosition, null)
+    assert.equal(current.kind, 'queued')
+    assert.equal(current.runId, null)
+    assert.equal(current.queuePosition, 535)
   }
   const resetEvidence = { ...base, queueUpdatedAt: 995, trainingState: 'resetting', trainingUpdatedAt: 990 }
   assert.notEqual(resolveActivity('miner', resetEvidence, true, 1000, null)?.kind, 'training')
@@ -192,4 +193,39 @@ test('native worker forward pass logs identify training and recover the continuo
 test('legacy trainingState without a timestamp must not fabricate a training state', () => {
   const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: null, trainingAt: 100 }
   assert.equal(resolveActivity('miner', evidence, true, 1000, null).kind, 'queued')
+})
+
+
+test('queue and training use event order without an age threshold', () => {
+  const evidence = { ...base, queueStartedAt: 110, queueUpdatedAt: 995,
+    trainingState: 'training_tick', trainingUpdatedAt: 140, trainingAt: 140, trainingRunId: 'run1' }
+  for (const official of [null, { ...activeOfficial, stale: true },
+    { ...activeOfficial, coverage: { successful: 7, total: 8 } }, { ...activeOfficial, miner: null }]) {
+    const current = resolveActivity('miner', evidence, true, 1000, official)
+    assert.equal(current.kind, 'queued')
+    assert.equal(current.queuePosition, 535)
+    assert.equal(current.runId, null)
+  }
+  for (const at of [700, 701, 1001]) {
+    assert.equal(resolveActivity('miner', { ...evidence, trainingUpdatedAt: 140, trainingAt: at }, true, 1000, null).kind,
+      'queued')
+  }
+  assert.equal(resolveActivity('miner', { ...evidence, trainingAt: 999 }, true, 1000, null).kind, 'training')
+  assert.equal(resolveActivity('miner', evidence, true, 1000, activeOfficial).kind, 'queued')
+  assert.equal(resolveActivity('miner', evidence, true, 1000, { ...activeOfficial, miner: { ...activeOfficial.miner, sampleAt: 999 } }).kind, 'training')
+})
+
+test('local event order has no timeout and queued timing starts at the transition', async () => {
+  const evidence = { ...base, trainingState: 'training_tick', trainingUpdatedAt: 140, trainingAt: 140 }
+  assert.equal(resolveActivity('miner', evidence, true, 100000, null).kind, 'training')
+  assert.equal(resolveActivity('miner', { ...evidence, queueUpdatedAt: 141 }, true, 142, null).kind, 'queued')
+  const records = [tick(100), { t: 200, line: 'Successfully completed request to /miner/register response: {"status":"queued","position":42}' },
+    { t: 300, line: 'Successfully completed request to /miner/register response: {"status":"queued","position":40}' }]
+  const dir = await mkdtemp(join(tmpdir(), 'ma-queue-order-'))
+  try {
+    const current = resolveActivity('miner', parseLogs(records, {}), true, 400, null)
+    assert.equal(current.kind, 'queued')
+    assert.equal(current.queuePosition, 40)
+    assert.equal((await activityTiming(join(dir, 'state.json'), current, records)).startedAt, 200)
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

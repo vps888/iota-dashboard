@@ -41,6 +41,14 @@ export function resolveActivity(minerId: string, evidence: Evidence, appRunning:
     && official.coverage.total > 0 && official.coverage.successful === official.coverage.total
     && sample?.hotkey === minerId && sample.sampleAt != null
     && Number.isFinite(sample.sampleAt) && sample.sampleAt <= now && now - sample.sampleAt <= 300
+  // An explicit newer queue response supersedes historical training, even when
+  // the official lookup is unavailable. Only a newer active roster can override it.
+  const latestTrainingAt = Math.max(trainingAt, evidence.trainingAt ?? 0)
+  if (evidence.queueStatus === 'queued' && registrationAt > 0 && registrationAt <= now
+    && registrationAt > latestTrainingAt
+    && !(officialCurrent && sample?.isActive && sample.sampleAt! > registrationAt)) {
+    return { ...snapshot('queued', '注册接口 status=queued'), runId: null }
+  }
   // The registration queue is not the training roster. A fresh active roster
   // entry wins over registration polls, but not a newer explicit training phase.
   if (officialCurrent && sample?.isActive) {
@@ -48,30 +56,18 @@ export function resolveActivity(minerId: string, evidence: Evidence, appRunning:
       && evidence.trainingState !== 'training' && trainingAt > sample.sampleAt!
     if (!explicitPhase) return { ...snapshot('training', '官方任务名单 is_active=true'), runId: sample.runId }
   }
-  // Registration polls do not demote an established training state. A new
-  // registration attempt or a newer non-success registration event can supersede it.
-  const trainingIsCurrent = trainingAt > 0 && trainingAt >= (evidence.queueStartedAt ?? 0)
-    && (evidence.queueStatus === 'succeeded' || trainingAt >= registrationAt
-      || (evidence.queueStatus === 'queued' && !officialCurrent))
+  // Local state follows event ordering, not API availability or elapsed time.
+  const trainingIsCurrent = trainingAt > 0 && trainingAt <= now
+    && (evidence.queueStatus === 'succeeded' || trainingAt >= registrationAt)
   if (trainingIsCurrent && evidence.trainingState) {
     const raw = evidence.trainingState
     const kind = raw === 'training_tick' ? 'training'
       : raw === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? raw : raw
     return snapshot(kind, `训练事件 state=${raw}${evidence.trainingPhase ? `；LayerPhase.${evidence.trainingPhase}` : ''}`)
   }
-  // A new registration attempt can overlap the existing training worker. Keep
-  // the explicit local phase rather than discarding it on an API outage.
-  if (!officialCurrent && trainingAt > 0 && trainingAt <= now
-    && evidence.queueStatus === 'queued' && evidence.trainingState
-    && !['waiting_training', 'resetting'].includes(evidence.trainingState)) {
-    const raw = evidence.trainingState
-    const kind = raw === 'training_tick' ? 'training'
-      : raw === 'layer_state_change' ? evidence.trainingPhase?.toLowerCase() ?? raw : raw
-    return snapshot(kind, `本地训练事件 state=${raw}；注册排队与训练并存，官方当前状态未确认`)
-  }
   // Python worker forward-pass logs are also direct local training evidence;
   // they do not require an Electron training.state event to be present.
-  if (evidence.trainingAt && evidence.trainingAt >= trainingAt
+  if (evidence.trainingAt && evidence.trainingAt <= now && evidence.trainingAt >= trainingAt
     && evidence.trainingAt >= registrationAt
     && evidence.trainingAt > (evidence.exitedAt ?? 0) && evidence.trainingAt > (evidence.quitAt ?? 0)) {
     return snapshot('training', 'IOTA 工作进程日志：训练 forward pass')
@@ -106,8 +102,7 @@ export async function trackActivity(path: string, current: ActivitySnapshot | nu
   await writeFile(path, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
 }
 
-// Replay only recognizable events in the latest app session. Registration polls
-// are not evidence of leaving an active training phase (the original queue bug).
+// Replay state transitions in log order, including explicit queued responses.
 export function appLogStartedAt(records: LogRecord[], current: ActivitySnapshot, sessionStartedAt = 0): number | null {
   const sorted = records.filter(r => Number.isFinite(r.t) && r.t <= current.observedAt).sort((a, b) => a.t - b.t)
   const session = Math.max(sessionStartedAt, ...sorted.filter(r => r.line.includes('[iota-cli runIotaCli] Connecting to CHANNEL')).map(r => r.t))
@@ -128,7 +123,7 @@ export function appLogStartedAt(records: LogRecord[], current: ActivitySnapshot,
       kind = 'training'
       runId = last?.kind === 'training' ? last.runId : null
     } else if (evidence.queueUpdatedAt === record.t && evidence.queueStatus) {
-      if (last && ['training', 'weights_uploading', 'merging_partitions'].includes(last.kind)) continue
+      if (evidence.queueStatus === 'succeeded' && last && ['training', 'weights_uploading', 'merging_partitions'].includes(last.kind)) continue
       kind = evidence.queueStatus
     }
     if (kind && (!last || last.kind !== kind || (runId && last.runId !== runId))) last = { kind, runId, at: record.t }
